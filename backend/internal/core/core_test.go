@@ -109,6 +109,30 @@ func TestMetadataLimits(t *testing.T) {
 	}
 }
 
+func TestJoinParts(t *testing.T) {
+	got := string(JoinParts([]byte("a"), []byte("b\n"), nil, []byte("c")))
+	if got != "a\nb\nc" {
+		t.Fatalf("got %q", got)
+	}
+	if string(JoinParts()) != "" {
+		t.Fatal("empty join")
+	}
+}
+
+func TestParseLayerRef(t *testing.T) {
+	l, err := ParseLayerRef("org-rules")
+	if err != nil || l.Ref != "main" {
+		t.Fatalf("%v %v", l, err)
+	}
+	l, err = ParseLayerRef("team-rules@canary")
+	if err != nil || l.Layer != "team-rules" || l.Ref != "canary" {
+		t.Fatalf("%v %v", l, err)
+	}
+	if _, err := ParseLayerRef("Bad Name"); err == nil {
+		t.Fatal("want error")
+	}
+}
+
 func TestChangeID(t *testing.T) {
 	id := NewChangeID()
 	if !ValidChangeID(id) || HashBytes(nil).Valid() == ValidChangeID(string(HashBytes(nil))) {

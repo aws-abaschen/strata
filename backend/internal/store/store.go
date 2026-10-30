@@ -53,6 +53,11 @@ type Meta interface {
 	CreateRepo(ctx context.Context, r core.Repo) error
 	GetRepo(ctx context.Context, name string) (core.Repo, error)
 	ListRepos(ctx context.Context) ([]core.Repo, error)
+	// UpdateRepo saves settings with compare-and-swap on the Layer the repo
+	// extended before (nil = none), and keeps the subscriber index in step.
+	UpdateRepo(ctx context.Context, r core.Repo, previous *core.LayerRef) error
+	// ListSubscribers returns the repositories that directly extend a Layer.
+	ListSubscribers(ctx context.Context, layer string) ([]core.Repo, error)
 
 	ListRefs(ctx context.Context, repo string) ([]core.Ref, error)
 	GetRef(ctx context.Context, repo, name string) (core.Ref, error)

@@ -49,6 +49,51 @@ Events go to EventBridge. The `tracker` Lambda adds a Jira remote link with
 `globalId = strata:<repo>:<rev>`, so a retry updates the link instead of adding a
 second one.
 
+## Layers (top-down configuration)
+
+A Layer is a repository of kind `layer`. Any repository can extend one Layer at a
+ref (`payments-rules@main`), and Layers extend Layers, so a chain mirrors the
+organization: `org-rules → payments-rules → cards-api`. Chains are at most 8 deep and
+cycles are refused.
+
+A Layer's optional `strata.layer.json` sets the mode of its files (first matching
+rule wins; `*` matches within a path segment, `**` across segments):
+
+```json
+{
+  "default": "override",
+  "rules": [
+    { "path": "ci/**", "mode": "locked" },
+    { "path": ".claude/skills/**", "mode": "locked" },
+    { "path": "AGENTS.md", "mode": "append" }
+  ]
+}
+```
+
+| Mode | Lower levels (Layers below, then the repo) |
+| --- | --- |
+| `locked` | cannot change it. The API rejects any push whose tree contains the path (`403`); a lower Layer's copy is ignored and reported as a violation. |
+| `override` | may replace it. The lowest level that has the file wins, and may set a new mode for the levels below it. |
+| `append` | may add to it. Contributions are concatenated top first, separated by a newline. |
+
+Resolution (`internal/layers`) reads each Layer at its ref from S3, top first, then
+applies the repository's own files as the last level. The repository stores only its
+own contribution (its override, or its appended lines), never a copy of inherited
+content, so a Layer change reaches every subscriber on its next pull.
+
+- `GET /repos/{repo}/layers?ref=main&content=true`: the effective files with modes,
+  sources and rendered text. This is the runtime endpoint for tools and AI agents.
+- `GET /repos/{layer}/subscribers`: the fleet, every repo inheriting directly or
+  through other Layers (subscriber index `PK=SUBS#<layer>`).
+- `PUT /repos/{repo}/settings {"extends": {"layer","ref"} | null}`: compare-and-swap
+  on the previous Layer; returns files the new Layer would lock.
+- CLI: `strata layers pull` writes the merged files into the working copy (locked ones
+  read-only) and records inherited content in `.strata/layers.json`; `push` uploads
+  only the repo's contribution and refuses edits to locked or inherited append lines.
+
+Rollouts in waves work with refs today: point canary repos at `org-rules@canary`,
+move `canary` first, then `main`.
+
 ## Consistency
 
 1. The client uploads objects (S3 verifies each hash).
@@ -67,7 +112,7 @@ second one.
   multipart uploads.
 - **Merges**: pushes are fast-forward only. Next: three-way merge Lambda and
   first-class conflicts.
-- **Layers**: the top-down cascade from the PR/FAQ (org → business unit → team → repo).
+- **Layers**: automatic wave rollouts (today: point canary repos at a `canary` ref, then move `main`), fleet drift view (which Layer revision each repo last pulled), Layer-level deny rules.
 - **Authorization**: any signed-in user can read and write any repository. Next:
   Amazon Verified Permissions (Cedar) with repo and path-level policies.
 - **Git bridge**, **semantic search**, **KMS per-object keys**, **Object Lock retention**.

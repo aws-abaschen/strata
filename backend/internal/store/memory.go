@@ -155,6 +155,35 @@ func (m *Memory) ListRepos(context.Context) ([]core.Repo, error) {
 	return out, nil
 }
 
+// UpdateRepo implements Meta.
+func (m *Memory) UpdateRepo(_ context.Context, r core.Repo, previous *core.LayerRef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.repos[r.Name]
+	if !ok {
+		return ErrNotFound
+	}
+	if extendsKey(cur.Extends) != extendsKey(previous) {
+		return ErrConflict
+	}
+	m.repos[r.Name] = r
+	return nil
+}
+
+// ListSubscribers implements Meta.
+func (m *Memory) ListSubscribers(_ context.Context, layer string) ([]core.Repo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []core.Repo{}
+	for _, r := range m.repos {
+		if r.Extends != nil && r.Extends.Layer == layer {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 // ListRefs implements Meta.
 func (m *Memory) ListRefs(_ context.Context, repo string) ([]core.Ref, error) {
 	m.mu.Lock()

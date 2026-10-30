@@ -21,7 +21,8 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Jira sync: remote link on the issue for every linked change (EventBridge → Lambda) | done |
 | `strata` CLI: init, clone, status, push, log, show, annotate, find | done |
 | Web console: repos, history, change detail, file browser, annotate, search | done |
-| Merges, Layers (top-down config cascade), policy-as-code, audit ledger, Git bridge | next |
+| Layers: org → business unit → team → repo cascade with locked, override and append files | done |
+| Merges, wave rollouts, policy-as-code, audit ledger, Git bridge | next |
 
 ## Layout
 
@@ -64,6 +65,26 @@ strata push -m "PAY-42 round half-even" --label risk:low --attr approver=ana
 strata annotate --work-item SEC-9 --note "covered by SEC-9 review"
 strata find --work-item PAY-42
 ```
+
+### Layers
+
+Push rules, CI templates, prompts and agent skills from the top down:
+
+```sh
+strata repo create org-rules --layer               # in the platform team's folder
+strata init --repo org-rules
+echo '{"rules":[{"path":"ci/**","mode":"locked"},{"path":"AGENTS.md","mode":"append"}]}' > strata.layer.json
+strata push -m "OPS-1 org baseline"
+
+strata repo create cards-api --extends org-rules    # any team
+strata clone cards-api && cd cards-api              # inherited files are written here
+echo "- cards-api: PAN tokens only" >> AGENTS.md    # your lines are kept on every pull
+strata push -m "CARD-1 skeleton"                    # stores only your contribution
+strata layers show                                  # chain, modes and sources
+strata layers fleet org-rules                       # who inherits from org-rules
+```
+
+See [docs/architecture.md](docs/architecture.md#layers-top-down-configuration).
 
 ### Jira
 

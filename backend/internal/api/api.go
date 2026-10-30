@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aws-abaschen/strata/backend/internal/core"
+	"github.com/aws-abaschen/strata/backend/internal/layers"
 	"github.com/aws-abaschen/strata/backend/internal/store"
 )
 
@@ -32,6 +33,7 @@ const (
 // API serves the HTTP endpoints.
 type API struct {
 	Objects store.Objects
+	layers  *layers.Resolver
 	Meta    store.Meta
 	Events  store.Events
 	// WebURL is the web console, used for links in events (Jira, Slack...).
@@ -73,6 +75,7 @@ func (a *API) Handler() http.Handler {
 	if a.Events == nil {
 		a.Events = store.NoEvents{}
 	}
+	a.layers = &layers.Resolver{Meta: a.Meta, Objects: a.Objects}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /me", a.me)
 	mux.HandleFunc("GET /repos", a.listRepos)
@@ -89,6 +92,9 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /repos/{repo}/changes/{rev}/annotations", a.annotate)
 	mux.HandleFunc("GET /work-items/{system}/{key}", a.findWorkItem)
 	mux.HandleFunc("GET /labels/{label...}", a.findLabel)
+	mux.HandleFunc("PUT /repos/{repo}/settings", a.updateSettings)
+	mux.HandleFunc("GET /repos/{repo}/layers", a.effectiveLayers)
+	mux.HandleFunc("GET /repos/{repo}/subscribers", a.subscribers)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if identity(r) == "" {
 			writeJSON(w, http.StatusUnauthorized, errBody{"unauthenticated"})
@@ -112,6 +118,8 @@ func (a *API) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, core.ErrInvalid):
 		writeJSON(w, http.StatusBadRequest, errBody{err.Error()})
+	case errors.Is(err, core.ErrPolicy):
+		writeJSON(w, http.StatusForbidden, errBody{err.Error()})
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errBody{err.Error()})
 	case errors.Is(err, store.ErrExists), errors.Is(err, store.ErrConflict):
@@ -187,8 +195,10 @@ func (a *API) listRepos(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createRepo(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
+		Name        string         `json:"name"`
+		Description string         `json:"description"`
+		Kind        core.RepoKind  `json:"kind"`
+		Extends     *core.LayerRef `json:"extends"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		a.fail(w, r, err)
@@ -202,7 +212,15 @@ func (a *API) createRepo(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, badRequest("description longer than 1024 bytes"))
 		return
 	}
-	rp := core.Repo{Name: in.Name, Description: in.Description, CreatedBy: identity(r), CreatedAt: a.now().UTC()}
+	if err := in.Kind.Validate(); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	rp := core.Repo{Name: in.Name, Description: in.Description, Kind: in.Kind, Extends: in.Extends, CreatedBy: identity(r), CreatedAt: a.now().UTC()}
+	if err := a.checkExtends(r.Context(), rp); err != nil {
+		a.fail(w, r, err)
+		return
+	}
 	if err := a.Meta.CreateRepo(r.Context(), rp); err != nil {
 		a.fail(w, r, err)
 		return
@@ -535,6 +553,10 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := a.checkClosure(ctx, rp.Name, in.Tree); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if err := a.checkLocked(ctx, rp, in.Tree); err != nil {
 		a.fail(w, r, err)
 		return
 	}

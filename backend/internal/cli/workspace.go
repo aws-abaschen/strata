@@ -71,6 +71,9 @@ type Snapshot struct {
 	Root    core.Hash
 	Objects map[core.Hash]source
 	Files   int
+
+	root    string
+	managed *LayerState
 }
 
 var alwaysIgnore = map[string]bool{StateDir: true, ".git": true, "node_modules": true}
@@ -121,7 +124,11 @@ func (ig ignorer) match(rel string, dir bool) bool {
 
 // TakeSnapshot hashes the working copy at root.
 func TakeSnapshot(root string) (*Snapshot, error) {
-	s := &Snapshot{Objects: map[core.Hash]source{}}
+	managed, err := LoadLayerState(root)
+	if err != nil {
+		return nil, err
+	}
+	s := &Snapshot{Objects: map[core.Hash]source{}, root: root, managed: managed}
 	ig := loadIgnore(root)
 	h, _, err := s.dir(root, "", ig)
 	if err != nil {
@@ -164,6 +171,25 @@ func (s *Snapshot) dir(abs, rel string, ig ignorer) (core.Hash, int, error) {
 			kind := core.KindFile
 			if info.Mode()&0o111 != 0 {
 				kind = core.KindExec
+			}
+			if mf, ok := s.managed.Files[r]; ok {
+				// Inherited from a Layer: store only this repo's contribution.
+				local, err := os.ReadFile(p)
+				if err != nil {
+					return "", 0, err
+				}
+				own, err := s.managed.own(s.root, r, mf, local)
+				if err != nil {
+					return "", 0, err
+				}
+				if own == nil {
+					continue
+				}
+				h = core.HashBytes(own)
+				s.Objects[h] = source{data: own, size: int64(len(own))}
+				s.Files++
+				t.Entries = append(t.Entries, core.TreeEntry{Name: de.Name(), Kind: kind, Hash: h, Size: int64(len(own))})
+				continue
 			}
 			s.Objects[h] = source{path: p, size: info.Size()}
 			s.Files++

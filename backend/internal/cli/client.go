@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/aws-abaschen/strata/backend/internal/core"
+	"github.com/aws-abaschen/strata/backend/internal/layers"
 	"github.com/aws-abaschen/strata/backend/internal/store"
 )
 
@@ -85,9 +86,63 @@ func esc(s string) string { return url.PathEscape(s) }
 
 // CreateRepo creates a repository.
 func (c *Client) CreateRepo(ctx context.Context, name, desc string) (core.Repo, error) {
+	return c.CreateRepoWith(ctx, NewRepo{Name: name, Description: desc})
+}
+
+// NewRepo is the body of a create-repository call.
+type NewRepo struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Kind        core.RepoKind  `json:"kind,omitempty"`
+	Extends     *core.LayerRef `json:"extends,omitempty"`
+}
+
+// CreateRepoWith creates a repository with a kind or a Layer to extend.
+func (c *Client) CreateRepoWith(ctx context.Context, in NewRepo) (core.Repo, error) {
 	var r core.Repo
-	err := c.do(ctx, http.MethodPost, "/repos", map[string]string{"name": name, "description": desc}, &r)
+	err := c.do(ctx, http.MethodPost, "/repos", in, &r)
 	return r, err
+}
+
+// GetRepo reads a repository.
+func (c *Client) GetRepo(ctx context.Context, name string) (core.Repo, error) {
+	var r core.Repo
+	err := c.do(ctx, http.MethodGet, "/repos/"+esc(name), nil, &r)
+	return r, err
+}
+
+// SetExtends points a repository at a Layer, or detaches it (nil). It
+// returns files in the repository's main that the new Layer locks.
+func (c *Client) SetExtends(ctx context.Context, repo string, l *core.LayerRef) ([]layers.Violation, error) {
+	var out struct{ Violations []layers.Violation }
+	err := c.do(ctx, http.MethodPut, "/repos/"+esc(repo)+"/settings", map[string]any{"extends": l}, &out)
+	return out.Violations, err
+}
+
+// Layers resolves a repository's configuration. own adds the repository's
+// files at ref as the last level.
+func (c *Client) Layers(ctx context.Context, repo, ref string, own bool) (layers.Effective, error) {
+	var out layers.Effective
+	q := "?ref=" + url.QueryEscape(ref)
+	if !own {
+		q = "?own=false"
+	}
+	err := c.do(ctx, http.MethodGet, "/repos/"+esc(repo)+"/layers"+q, nil, &out)
+	return out, err
+}
+
+// Subscriber is one repository inheriting from a Layer.
+type Subscriber struct {
+	Repo  core.Repo `json:"repo"`
+	Via   string    `json:"via"`
+	Depth int       `json:"depth"`
+}
+
+// Subscribers lists a Layer's fleet.
+func (c *Client) Subscribers(ctx context.Context, layer string) ([]Subscriber, error) {
+	var out struct{ Subscribers []Subscriber }
+	err := c.do(ctx, http.MethodGet, "/repos/"+esc(layer)+"/subscribers", nil, &out)
+	return out.Subscribers, err
 }
 
 // ListRepos lists repositories.

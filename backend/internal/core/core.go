@@ -44,6 +44,10 @@ func (h Hash) Short() string {
 // ErrInvalid wraps every validation error, so callers can map it to a 400.
 var ErrInvalid = errors.New("invalid")
 
+// ErrPolicy means the request is well-formed but a governance rule forbids
+// it, for example a push that changes a file a Layer locked.
+var ErrPolicy = errors.New("policy violation")
+
 func invalid(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
 }
@@ -365,8 +369,70 @@ type Annotation struct {
 type Repo struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
+	Kind        RepoKind  `json:"kind"`
+	Extends     *LayerRef `json:"extends,omitempty"`
 	CreatedBy   string    `json:"createdBy"`
 	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedBy   string    `json:"updatedBy,omitempty"`
+	UpdatedAt   time.Time `json:"updatedAt,omitzero"`
+}
+
+// RepoKind says whether a repository holds work (code, docs) or a Layer:
+// configuration meant to be inherited by other repositories, not forked.
+type RepoKind string
+
+const (
+	KindCode  RepoKind = "code"
+	KindLayer RepoKind = "layer"
+)
+
+// Validate checks the kind, defaulting an empty one to code.
+func (k *RepoKind) Validate() error {
+	switch *k {
+	case "":
+		*k = KindCode
+	case KindCode, KindLayer:
+	default:
+		return invalid("repository kind %q: use code or layer", *k)
+	}
+	return nil
+}
+
+// LayerRef points a repository at the Layer it inherits from. Ref lets a
+// Layer publisher roll out in waves: subscribers on "canary" get a change
+// before those on "main".
+type LayerRef struct {
+	Layer string `json:"layer"`
+	Ref   string `json:"ref"`
+}
+
+// String renders "layer@ref".
+func (l LayerRef) String() string { return l.Layer + "@" + l.Ref }
+
+// ParseLayerRef parses "layer" or "layer@ref" (ref defaults to main).
+func ParseLayerRef(s string) (LayerRef, error) {
+	name, ref, ok := strings.Cut(s, "@")
+	if !ok {
+		ref = "main"
+	}
+	l := LayerRef{Layer: name, Ref: ref}
+	if err := ValidateRepoName(name); err != nil {
+		return l, err
+	}
+	return l, ValidateRefName(ref)
+}
+
+// JoinParts concatenates append-mode contributions, top layer first. A
+// newline separates parts unless the previous one already ends with one.
+func JoinParts(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			out = append(out, '\n')
+		}
+		out = append(out, p...)
+	}
+	return out
 }
 
 // Ref is a named pointer to a revision.

@@ -91,17 +91,82 @@ func (d *Dynamo) query(ctx context.Context, in *dynamodb.QueryInput, limit int) 
 	return items, nil
 }
 
+func extendsKey(l *core.LayerRef) string {
+	if l == nil {
+		return ""
+	}
+	return l.String()
+}
+
+func repoItem(r core.Repo) (map[string]types.AttributeValue, error) {
+	return item(repoPK(r.Name), "META", r, map[string]types.AttributeValue{
+		"GSI1PK": s("REPOS"), "GSI1SK": s(r.Name), "extends": s(extendsKey(r.Extends)),
+	})
+}
+
+// subscriber index: PK=SUBS#<layer> SK=REPO#<repo>
+func subsKey(layer, repo string) map[string]types.AttributeValue {
+	return map[string]types.AttributeValue{"PK": s("SUBS#" + layer), "SK": s("REPO#" + repo)}
+}
+
 // CreateRepo implements Meta.
 func (d *Dynamo) CreateRepo(ctx context.Context, r core.Repo) error {
-	it, err := item(repoPK(r.Name), "META", r, map[string]types.AttributeValue{"GSI1PK": s("REPOS"), "GSI1SK": s(r.Name)})
+	it, err := repoItem(r)
 	if err != nil {
 		return err
 	}
-	_, err = d.Client.PutItem(ctx, &dynamodb.PutItemInput{TableName: &d.Table, Item: it, ConditionExpression: aws.String("attribute_not_exists(PK)")})
-	if isConditionFailed(err) {
-		return ErrExists
+	tx := []types.TransactWriteItem{{Put: &types.Put{Item: it, ConditionExpression: aws.String("attribute_not_exists(PK)")}}}
+	if r.Extends != nil {
+		sub, err := item("SUBS#"+r.Extends.Layer, "REPO#"+r.Name, r, nil)
+		if err != nil {
+			return err
+		}
+		tx = append(tx, types.TransactWriteItem{Put: &types.Put{Item: sub}})
+	}
+	return d.transact(ctx, tx)
+}
+
+// UpdateRepo implements Meta.
+func (d *Dynamo) UpdateRepo(ctx context.Context, r core.Repo, previous *core.LayerRef) error {
+	it, err := repoItem(r)
+	if err != nil {
+		return err
+	}
+	// Item 0 checks the repo exists (transact maps its failure to ErrExists,
+	// turned into ErrNotFound below); item 1 is the CAS on the old Layer.
+	tx := []types.TransactWriteItem{
+		{ConditionCheck: &types.ConditionCheck{Key: map[string]types.AttributeValue{"PK": s(repoPK(r.Name)), "SK": s("META")},
+			ConditionExpression: aws.String("attribute_exists(PK)")}},
+		{Put: &types.Put{Item: it, ConditionExpression: aws.String("extends = :prev"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{":prev": s(extendsKey(previous))}}},
+	}
+	if previous != nil && (r.Extends == nil || previous.Layer != r.Extends.Layer) {
+		tx = append(tx, types.TransactWriteItem{Delete: &types.Delete{Key: subsKey(previous.Layer, r.Name)}})
+	}
+	if r.Extends != nil {
+		sub, err := item("SUBS#"+r.Extends.Layer, "REPO#"+r.Name, r, nil)
+		if err != nil {
+			return err
+		}
+		tx = append(tx, types.TransactWriteItem{Put: &types.Put{Item: sub}})
+	}
+	err = d.transact(ctx, tx)
+	if errors.Is(err, ErrExists) { // item 0 failed: the repo is gone
+		return ErrNotFound
 	}
 	return err
+}
+
+// ListSubscribers implements Meta.
+func (d *Dynamo) ListSubscribers(ctx context.Context, layer string) ([]core.Repo, error) {
+	items, err := d.query(ctx, &dynamodb.QueryInput{
+		KeyConditionExpression:    aws.String("PK = :p"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":p": s("SUBS#" + layer)},
+	}, 0)
+	if err != nil {
+		return nil, err
+	}
+	return decodeAll[core.Repo](items)
 }
 
 // GetRepo implements Meta.
@@ -252,6 +317,8 @@ func (d *Dynamo) transact(ctx context.Context, tx []types.TransactWriteItem) err
 			t.Put.TableName = &d.Table
 		case t.ConditionCheck != nil:
 			t.ConditionCheck.TableName = &d.Table
+		case t.Delete != nil:
+			t.Delete.TableName = &d.Table
 		}
 	}
 	_, err := d.Client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: tx})

@@ -14,11 +14,55 @@ export interface Metadata {
   attributes?: Record<string, string>
 }
 
+export interface LayerRef {
+  layer: string
+  ref: string
+}
+
 export interface Repo {
   name: string
   description?: string
+  kind: 'code' | 'layer'
+  extends?: LayerRef
   createdBy: string
   createdAt: string
+}
+
+export type LayerMode = 'locked' | 'override' | 'append'
+
+export interface LayerPart {
+  source: string
+  revision?: Hash
+  hash: Hash
+  size: number
+}
+
+export interface LayerFile {
+  path: string
+  mode: LayerMode
+  modeSetBy: string
+  kind: 'file' | 'exec'
+  parts: LayerPart[]
+  content?: string
+}
+
+export interface Violation {
+  path: string
+  source: string
+  lockedBy: string
+}
+
+export interface Effective {
+  repo: string
+  chain: { layer: string; ref: string; revision?: Hash; missing?: boolean }[]
+  files: LayerFile[]
+  violations: Violation[]
+}
+
+export interface Subscriber {
+  repo: Repo
+  via: string
+  depth: number
 }
 
 export interface Ref {
@@ -120,7 +164,14 @@ export class Api {
 
   me = () => this.call<{ identity: string }>('GET', '/me')
   repos = () => this.call<{ repos: Repo[] }>('GET', '/repos').then((r) => r.repos)
-  createRepo = (name: string, description: string) => this.call<Repo>('POST', '/repos', { name, description })
+  createRepo = (name: string, description: string, kind: Repo['kind'] = 'code', ext?: LayerRef) =>
+    this.call<Repo>('POST', '/repos', { name, description, kind, extends: ext })
+  setExtends = (repo: string, ext: LayerRef | null) =>
+    this.call<{ repo: Repo; violations: Violation[] }>('PUT', `/repos/${enc(repo)}/settings`, { extends: ext })
+  layers = (repo: string, ref: string) =>
+    this.call<Effective>('GET', `/repos/${enc(repo)}/layers?ref=${encodeURIComponent(ref)}&content=true`)
+  subscribers = (layer: string) =>
+    this.call<{ subscribers: Subscriber[] }>('GET', `/repos/${enc(layer)}/subscribers`).then((r) => r.subscribers)
   repo = (repo: string) => this.call<Repo>('GET', `/repos/${enc(repo)}`)
   refs = (repo: string) => this.call<{ refs: Ref[] }>('GET', `/repos/${enc(repo)}/refs`).then((r) => r.refs)
   log = (repo: string, ref: string, limit = 50) =>

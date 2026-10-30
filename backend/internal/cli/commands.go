@@ -28,6 +28,14 @@ Usage:
   strata annotate [REV] [--note TEXT] [metadata]
   strata find --work-item KEY | --label LABEL   search every repository
 
+Layers (configuration inherited top-down):
+  strata repo create NAME --layer               a Layer repository
+  strata repo create NAME --extends LAYER[@REF] a repository inheriting a Layer
+  strata layers [show]                          the resolved chain and files
+  strata layers set LAYER[@REF] | unset         change what this repo extends
+  strata layers pull                            write inherited files here
+  strata layers fleet [LAYER]                   repositories inheriting a Layer
+
 Metadata flags (repeatable):
   --work-item KEY        PAY-42 (Jira) or system:KEY, e.g. servicenow:CHG0031337
   --label NAME           e.g. risk:low, release/2026.11
@@ -257,6 +265,8 @@ func run(ctx context.Context, args []string, env Env) error {
 		}
 		fmt.Fprintf(env.Out, "annotated %s\n", rev.Short())
 		return nil
+	case "layers":
+		return layersCmd(ctx, c, st, root, args, env.Out)
 	case "find":
 		wi := fs.String("work-item", "", "work item")
 		label := fs.String("label", "", "label")
@@ -298,6 +308,8 @@ func repoCmd(ctx context.Context, args []string, env Env) error {
 	fs.SetOutput(env.Out)
 	api := fs.String("api", "", "API URL")
 	desc := fs.String("d", "", "description")
+	isLayer := fs.Bool("layer", false, "create a Layer repository")
+	extends := fs.String("extends", "", "inherit from LAYER[@REF]")
 	if err := fs.Parse(reorder(args[1:])); err != nil {
 		return err
 	}
@@ -311,11 +323,26 @@ func repoCmd(ctx context.Context, args []string, env Env) error {
 		if fs.NArg() != 1 {
 			return errors.New("usage: strata repo create NAME")
 		}
-		r, err := c.CreateRepo(ctx, fs.Arg(0), *desc)
+		in := NewRepo{Name: fs.Arg(0), Description: *desc, Kind: core.KindCode}
+		if *isLayer {
+			in.Kind = core.KindLayer
+		}
+		if *extends != "" {
+			l, err := core.ParseLayerRef(*extends)
+			if err != nil {
+				return err
+			}
+			in.Extends = &l
+		}
+		r, err := c.CreateRepoWith(ctx, in)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(env.Out, "created %s\n", r.Name)
+		fmt.Fprintf(env.Out, "created %s %s", r.Kind, r.Name)
+		if r.Extends != nil {
+			fmt.Fprintf(env.Out, " extending %s", r.Extends)
+		}
+		fmt.Fprintln(env.Out)
 	case "list":
 		repos, err := c.ListRepos(ctx)
 		if err != nil {
@@ -348,7 +375,13 @@ func reorder(args []string) []string {
 	return append(flags, pos...)
 }
 
-func isBool(f string) bool { return f == "--amend" || f == "-amend" }
+func isBool(f string) bool {
+	switch strings.TrimLeft(f, "-") {
+	case "amend", "layer":
+		return true
+	}
+	return false
+}
 
 func firstNonEmpty(a ...string) string {
 	for _, s := range a {
@@ -460,5 +493,78 @@ func clone(ctx context.Context, c *Client, repo, refName, dir string, out io.Wri
 	} else {
 		fmt.Fprintf(out, "cloned empty repository %s into %s\n", repo, dir)
 	}
-	return SaveState(dir, st)
+	if err := SaveState(dir, st); err != nil {
+		return err
+	}
+	r, err := c.GetRepo(ctx, repo)
+	if err != nil {
+		return err
+	}
+	if r.Extends != nil {
+		return PullLayers(ctx, c, st, dir, out)
+	}
+	return nil
+}
+
+func layersCmd(ctx context.Context, c *Client, st State, root string, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		args = []string{"show"}
+	}
+	switch args[0] {
+	case "show":
+		eff, err := c.Layers(ctx, st.Repo, st.Ref, true)
+		if err != nil {
+			return err
+		}
+		printEffective(out, eff)
+		return nil
+	case "pull":
+		return PullLayers(ctx, c, st, root, out)
+	case "set", "unset":
+		var l *core.LayerRef
+		if args[0] == "set" {
+			if len(args) != 2 {
+				return errors.New("usage: strata layers set LAYER[@REF]")
+			}
+			p, err := core.ParseLayerRef(args[1])
+			if err != nil {
+				return err
+			}
+			l = &p
+		}
+		violations, err := c.SetExtends(ctx, st.Repo, l)
+		if err != nil {
+			return err
+		}
+		if l == nil {
+			fmt.Fprintf(out, "%s no longer extends a layer\n", st.Repo)
+		} else {
+			fmt.Fprintf(out, "%s now extends %s\n", st.Repo, l)
+		}
+		for _, v := range violations {
+			fmt.Fprintf(out, "  warning: %s is locked by %s; remove it from %s or pushes will be rejected\n", v.Path, v.LockedBy, st.Repo)
+		}
+		return PullLayers(ctx, c, st, root, out)
+	case "fleet":
+		layer := st.Repo
+		if len(args) > 1 {
+			layer = args[1]
+		}
+		subs, err := c.Subscribers(ctx, layer)
+		if err != nil {
+			return err
+		}
+		if len(subs) == 0 {
+			fmt.Fprintf(out, "no repository extends %s yet\n", layer)
+		}
+		for _, s := range subs {
+			ref := ""
+			if s.Repo.Extends != nil {
+				ref = "@" + s.Repo.Extends.Ref
+			}
+			fmt.Fprintf(out, "%*s%s (%s) via %s%s\n", 2*(s.Depth-1), "", s.Repo.Name, s.Repo.Kind, s.Via, ref)
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown layers command %q", args[0])
 }

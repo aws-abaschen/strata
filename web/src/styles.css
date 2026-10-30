@@ -336,3 +336,130 @@ textarea:focus {
     width: 100%;
   }
 }
+
+/* Layers */
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin: 0.5rem 0 1rem;
+}
+.tab {
+  font: inherit;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 0.45rem 0.8rem;
+  cursor: pointer;
+}
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.chain-link {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.6rem;
+}
+.chain-self {
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.chain-arrow {
+  color: var(--muted);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.table th,
+.table td {
+  text-align: left;
+  padding: 0.55rem 0.9rem;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+.table th {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-top: 0;
+}
+.link {
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+.small {
+  font-size: 0.82rem;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+.form-row select {
+  flex: 0 1 auto;
+}
+.source {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  margin-right: 0.35rem;
+}
+.source + .source::before {
+  content: '+ ';
+  color: var(--muted);
+}
+.source-self {
+  font-weight: 700;
+}
+.chip-mode-locked {
+  background: #fbebeb;
+  color: #a12a2a;
+  font-weight: 600;
+}
+.chip-mode-append {
+  background: var(--label-bg);
+  color: var(--label-ink);
+}
+.chip-mode-override {
+  background: var(--attr-bg);
+}
+@media (prefers-color-scheme: dark) {
+  .chip-mode-locked {
+    background: #3d1f1f;
+    color: #ffaaa5;
+  }
+}
+@media (max-width: 640px) {
+  .table th:nth-child(4),
+  .table td:nth-child(4) {
+    display: none;
+  }
+}
+.form-row:has(.field) {
+  align-items: flex-end;
+}
+.field input,
+.field select {
+  flex: none;
+}
