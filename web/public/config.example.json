@@ -1,0 +1,6 @@
+{
+  "apiUrl": "https://xxxx.execute-api.eu-west-1.amazonaws.com",
+  "authority": "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_xxxx",
+  "clientId": "xxxx",
+  "authDomain": "https://strata-123456789012.auth.eu-west-1.amazoncognito.com"
+}

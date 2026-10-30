@@ -1,0 +1,464 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/aws-abaschen/strata/backend/internal/core"
+)
+
+const usage = `strata: serverless version control on S3
+
+Usage:
+  strata repo create NAME [-d DESCRIPTION]
+  strata repo list
+  strata init --repo NAME [--ref main]          start a working copy here
+  strata clone REPO [DIR] [--ref main]          download a repository
+  strata status                                 show whether files changed since HEAD
+  strata push -m MESSAGE [metadata] [--amend]   snapshot and record a change
+  strata log [-n 20]                            history of the current ref
+  strata show [REV]                             one change with its annotations
+  strata annotate [REV] [--note TEXT] [metadata]
+  strata find --work-item KEY | --label LABEL   search every repository
+
+Metadata flags (repeatable):
+  --work-item KEY        PAY-42 (Jira) or system:KEY, e.g. servicenow:CHG0031337
+  --label NAME           e.g. risk:low, release/2026.11
+  --attr NAME=VALUE      any attribute, e.g. approver=ana
+
+Jira keys in the message (PAY-42 ...) are linked automatically.
+
+Environment:
+  STRATA_API     API URL (else taken from the working copy, or --api)
+  STRATA_TOKEN   bearer token (an ID token from the web console)
+`
+
+type multi []string
+
+func (m *multi) String() string     { return strings.Join(*m, ",") }
+func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
+
+type metaFlags struct{ items, labels, attrs multi }
+
+func (f *metaFlags) register(fs *flag.FlagSet) {
+	fs.Var(&f.items, "work-item", "link a work item (repeatable)")
+	fs.Var(&f.labels, "label", "add a label (repeatable)")
+	fs.Var(&f.attrs, "attr", "add NAME=VALUE (repeatable)")
+}
+
+func (f *metaFlags) metadata() (core.Metadata, error) {
+	var md core.Metadata
+	for _, s := range f.items {
+		w, err := core.ParseWorkItem(s)
+		if err != nil {
+			return md, err
+		}
+		md.WorkItems = append(md.WorkItems, w)
+	}
+	md.Labels = f.labels
+	for _, a := range f.attrs {
+		k, v, ok := strings.Cut(a, "=")
+		if !ok {
+			return md, fmt.Errorf("--attr %q: want NAME=VALUE", a)
+		}
+		if md.Attributes == nil {
+			md.Attributes = map[string]string{}
+		}
+		md.Attributes[k] = v
+	}
+	return md, md.Normalize()
+}
+
+// Env is what commands read from the outside world.
+type Env struct {
+	Dir    string
+	Out    io.Writer
+	Getenv func(string) string
+	// Client overrides the HTTP client (tests).
+	Client *Client
+}
+
+func (e Env) client(api string) (*Client, error) {
+	if v := e.Getenv("STRATA_API"); v != "" {
+		api = v
+	}
+	if api == "" {
+		return nil, errors.New("no API URL: set STRATA_API or pass --api")
+	}
+	c := &Client{API: api, Token: e.Getenv("STRATA_TOKEN")}
+	if e.Client != nil {
+		c.HTTP = e.Client.HTTP
+	}
+	return c, nil
+}
+
+// Run executes one command and returns the exit code.
+func Run(ctx context.Context, args []string, env Env) int {
+	if env.Getenv == nil {
+		env.Getenv = os.Getenv
+	}
+	if err := run(ctx, args, env); err != nil {
+		fmt.Fprintln(env.Out, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+func run(ctx context.Context, args []string, env Env) error {
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		fmt.Fprint(env.Out, usage)
+		return nil
+	}
+	cmd, args := args[0], args[1:]
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.SetOutput(env.Out)
+	api := fs.String("api", "", "API URL")
+	switch cmd {
+	case "repo":
+		return repoCmd(ctx, args, env)
+	case "init":
+		repo := fs.String("repo", "", "repository name")
+		ref := fs.String("ref", "main", "ref to push to")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if err := core.ValidateRepoName(*repo); err != nil {
+			return err
+		}
+		if err := SaveState(env.Dir, State{API: *api, Repo: *repo, Ref: *ref}); err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Out, "initialized %s (ref %s)\n", *repo, *ref)
+		return nil
+	case "clone":
+		ref := fs.String("ref", "main", "ref to check out")
+		if err := fs.Parse(reorder(args)); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return errors.New("usage: strata clone REPO [DIR]")
+		}
+		repo := fs.Arg(0)
+		dir := filepath.Join(env.Dir, repo)
+		if fs.NArg() > 1 {
+			dir = fs.Arg(1)
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(env.Dir, dir)
+			}
+		}
+		c, err := env.client(*api)
+		if err != nil {
+			return err
+		}
+		return clone(ctx, c, repo, *ref, dir, env.Out)
+	}
+
+	st, root, err := LoadState(env.Dir)
+	if err != nil {
+		return err
+	}
+	c, err := env.client(firstNonEmpty(*api, st.API))
+	if err != nil {
+		return err
+	}
+	switch cmd {
+	case "status":
+		snap, err := TakeSnapshot(root)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Out, "repo %s, ref %s\n", st.Repo, st.Ref)
+		if st.Head == "" {
+			fmt.Fprintf(env.Out, "no changes yet; %d files ready to push\n", snap.Files)
+			return nil
+		}
+		d, err := c.GetChange(ctx, st.Repo, st.Head)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Out, "HEAD %s %s\n", st.Head.Short(), d.Change.Subject())
+		if d.Change.Tree == snap.Root {
+			fmt.Fprintln(env.Out, "working copy is clean")
+		} else {
+			fmt.Fprintln(env.Out, "working copy has changes")
+		}
+		return nil
+	case "push":
+		msg := fs.String("m", "", "message")
+		amend := fs.Bool("amend", false, "replace HEAD with a new revision of the same change")
+		var mf metaFlags
+		mf.register(fs)
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		md, err := mf.metadata()
+		if err != nil {
+			return err
+		}
+		return push(ctx, c, &st, root, *msg, md, *amend, env.Out)
+	case "log":
+		n := fs.Int("n", 20, "number of changes")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		changes, err := c.Log(ctx, st.Repo, st.Ref, *n)
+		if err != nil {
+			return err
+		}
+		for _, ch := range changes {
+			printChange(env.Out, ch, ch.Metadata)
+		}
+		return nil
+	case "show":
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		rev, err := revArg(fs, st)
+		if err != nil {
+			return err
+		}
+		d, err := c.GetChange(ctx, st.Repo, rev)
+		if err != nil {
+			return err
+		}
+		printChange(env.Out, d.Change, d.EffectiveMetadata)
+		fmt.Fprintf(env.Out, "  tree %s\n", d.Change.Tree)
+		if d.LatestRevision != d.Change.Revision {
+			fmt.Fprintf(env.Out, "  superseded by %s\n", d.LatestRevision.Short())
+		}
+		for _, a := range d.Annotations {
+			fmt.Fprintf(env.Out, "  note by %s at %s: %s\n", a.Author, a.CreatedAt.Format(time.RFC3339), a.Note)
+		}
+		return nil
+	case "annotate":
+		note := fs.String("note", "", "free text")
+		var mf metaFlags
+		mf.register(fs)
+		if err := fs.Parse(reorder(args)); err != nil {
+			return err
+		}
+		rev, err := revArg(fs, st)
+		if err != nil {
+			return err
+		}
+		md, err := mf.metadata()
+		if err != nil {
+			return err
+		}
+		if _, err := c.Annotate(ctx, st.Repo, rev, *note, md); err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Out, "annotated %s\n", rev.Short())
+		return nil
+	case "find":
+		wi := fs.String("work-item", "", "work item")
+		label := fs.String("label", "", "label")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		var res []core.ChangeSummary
+		switch {
+		case *wi != "":
+			w, err := core.ParseWorkItem(*wi)
+			if err != nil {
+				return err
+			}
+			res, err = c.FindWorkItem(ctx, w)
+			if err != nil {
+				return err
+			}
+		case *label != "":
+			res, err = c.FindLabel(ctx, *label)
+			if err != nil {
+				return err
+			}
+		default:
+			return errors.New("pass --work-item or --label")
+		}
+		for _, s := range res {
+			fmt.Fprintf(env.Out, "%s %-20s %s %s (%s, via %s)\n", s.Revision.Short(), s.Repo, s.CreatedAt.Format("2006-01-02"), s.Subject, s.Author, s.Via)
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown command %q (try strata help)", cmd)
+}
+
+func repoCmd(ctx context.Context, args []string, env Env) error {
+	if len(args) == 0 {
+		return errors.New("usage: strata repo create|list")
+	}
+	fs := flag.NewFlagSet("repo", flag.ContinueOnError)
+	fs.SetOutput(env.Out)
+	api := fs.String("api", "", "API URL")
+	desc := fs.String("d", "", "description")
+	if err := fs.Parse(reorder(args[1:])); err != nil {
+		return err
+	}
+	st, _, _ := LoadState(env.Dir)
+	c, err := env.client(firstNonEmpty(*api, st.API))
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "create":
+		if fs.NArg() != 1 {
+			return errors.New("usage: strata repo create NAME")
+		}
+		r, err := c.CreateRepo(ctx, fs.Arg(0), *desc)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Out, "created %s\n", r.Name)
+	case "list":
+		repos, err := c.ListRepos(ctx)
+		if err != nil {
+			return err
+		}
+		for _, r := range repos {
+			fmt.Fprintf(env.Out, "%-24s %s\n", r.Name, r.Description)
+		}
+	default:
+		return fmt.Errorf("unknown repo command %q", args[0])
+	}
+	return nil
+}
+
+// reorder moves positional arguments after flags, so "clone repo --ref x" works.
+func reorder(args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+			if !strings.Contains(a, "=") && i+1 < len(args) && !isBool(a) {
+				flags = append(flags, args[i+1])
+				i++
+			}
+			continue
+		}
+		pos = append(pos, a)
+	}
+	return append(flags, pos...)
+}
+
+func isBool(f string) bool { return f == "--amend" || f == "-amend" }
+
+func firstNonEmpty(a ...string) string {
+	for _, s := range a {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func revArg(fs *flag.FlagSet, st State) (core.Hash, error) {
+	if fs.NArg() > 0 {
+		h := core.Hash(fs.Arg(0))
+		if !h.Valid() {
+			return "", fmt.Errorf("revision %q: give the full 64-character hash", fs.Arg(0))
+		}
+		return h, nil
+	}
+	if st.Head == "" {
+		return "", errors.New("no HEAD yet")
+	}
+	return st.Head, nil
+}
+
+func printChange(w io.Writer, c core.Change, md core.Metadata) {
+	fmt.Fprintf(w, "%s  change %s\n", c.Revision.Short(), c.ChangeID[:13])
+	fmt.Fprintf(w, "  %s  %s\n", c.Author, c.CreatedAt.Format(time.RFC3339))
+	fmt.Fprintf(w, "  %s\n", c.Subject())
+	var tags []string
+	for _, wi := range md.WorkItems {
+		tags = append(tags, wi.String())
+	}
+	for _, l := range md.Labels {
+		tags = append(tags, "#"+l)
+	}
+	for k, v := range md.Attributes {
+		tags = append(tags, k+"="+v)
+	}
+	if len(tags) > 0 {
+		fmt.Fprintf(w, "  [%s]\n", strings.Join(tags, " "))
+	}
+}
+
+func push(ctx context.Context, c *Client, st *State, root, msg string, md core.Metadata, amend bool, out io.Writer) error {
+	if strings.TrimSpace(msg) == "" {
+		return errors.New("a message is required: -m \"PAY-42 what changed\"")
+	}
+	snap, err := TakeSnapshot(root)
+	if err != nil {
+		return err
+	}
+	sent, err := snap.Upload(ctx, c, st.Repo)
+	if err != nil {
+		return err
+	}
+	in := NewChange{Tree: snap.Root, Message: msg, Metadata: md, Ref: st.Ref, Parents: []core.Hash{}}
+	expected := st.Head
+	in.ExpectedRef = &expected
+	if amend {
+		if st.Head == "" {
+			return errors.New("nothing to amend")
+		}
+		head, err := c.GetChange(ctx, st.Repo, st.Head)
+		if err != nil {
+			return err
+		}
+		in.ChangeID = head.Change.ChangeID
+		in.Parents = head.Change.Parents
+	} else if st.Head != "" {
+		in.Parents = []core.Hash{st.Head}
+	}
+	ch, err := c.CreateChange(ctx, st.Repo, in)
+	if err != nil {
+		var ae *APIError
+		if errors.As(err, &ae) && ae.Status == 409 {
+			return fmt.Errorf("%s: %s moved on the server; clone again and reapply your work (merge support is coming)", st.Repo, st.Ref)
+		}
+		return err
+	}
+	st.Head, st.ChangeID = ch.Revision, ch.ChangeID
+	if err := SaveState(root, *st); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "pushed %s to %s (%d files, %d new objects)\n", ch.Revision.Short(), st.Ref, snap.Files, sent)
+	printChange(out, ch, ch.Metadata)
+	return nil
+}
+
+func clone(ctx context.Context, c *Client, repo, refName, dir string, out io.Writer) error {
+	if des, err := os.ReadDir(dir); err == nil && len(des) > 0 {
+		return fmt.Errorf("%s exists and is not empty", dir)
+	}
+	st := State{API: c.API, Repo: repo, Ref: refName}
+	ref, ok, err := c.GetRef(ctx, repo, refName)
+	if err != nil {
+		return err
+	}
+	if ok {
+		d, err := c.GetChange(ctx, repo, ref.Target)
+		if err != nil {
+			return err
+		}
+		n, err := Checkout(ctx, c, repo, d.Change.Tree, dir)
+		if err != nil {
+			return err
+		}
+		st.Head, st.ChangeID = d.Change.Revision, d.Change.ChangeID
+		fmt.Fprintf(out, "cloned %s@%s into %s (%d files)\n", repo, ref.Target.Short(), dir, n)
+	} else {
+		fmt.Fprintf(out, "cloned empty repository %s into %s\n", repo, dir)
+	}
+	return SaveState(dir, st)
+}

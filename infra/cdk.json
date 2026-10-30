@@ -1,0 +1,8 @@
+{
+  "app": "npx tsx bin/app.ts",
+  "context": {
+    "region": "eu-west-1",
+    "authDomainPrefix": "",
+    "jiraSecretArn": ""
+  }
+}

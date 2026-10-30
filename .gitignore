@@ -1,0 +1,9 @@
+node_modules/
+backend/dist/
+infra/cdk.out/
+web/dist/
+web/public/config.json
+.cdk.staging/
+.env
+*.log
+.strata/
