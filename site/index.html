@@ -310,7 +310,7 @@
           <tr><td>SOC 2 CC7, ISO 27001 logging</td><td>Hash-chained ledger of every write, archived under S3 Object Lock, verifiable by anyone with read access</td></tr>
           <tr><td>SOX §802, DORA Art. 12: integrity of records</td><td>Chain heads signed with a KMS key and timestamped (RFC 3161) every 15 minutes; the archive is reconciled against the index, with alarms on any gap or rewrite</td></tr>
           <tr><td>DORA Art. 28: concentration and third-party risk</td><td>Runs in your own AWS account; no extra hosted provider holds your code</td></tr>
-          <tr><td>DORA Art. 28(8): exit strategy</td><td><code>strata export</code> writes plain Git plus the ledger, anchors and approvals; an open format and a verifier that needs no Strata code check the export is complete and unaltered</td></tr>
+          <tr><td>DORA Art. 28(8): exit strategy</td><td><code>strata export</code> writes plain Git plus the ledger, anchors and approvals; a documented format and a verifier that needs no Strata code check the export is complete and unaltered</td></tr>
         </tbody>
       </table>
     </div>

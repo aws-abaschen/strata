@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -120,9 +121,17 @@ func exportVerify(args []string, env Env) error {
 		fmt.Fprintf(env.Out, "  %d tree entries Git cannot hold (.git) are checked in the sidecar only\n", rep.Omitted)
 	}
 	printAnchors(env.Out, "ledger", rep.Anchors, ac)
+	printUnanchored(env.Out, rep.Unanchored)
 	if rep.BreakGlass != nil {
 		fmt.Fprintf(env.Out, "verified %d break-glass records\n", rep.BreakGlass.Records)
 		printAnchors(env.Out, "break-glass ledger", rep.BreakGlass.Anchors, ac)
+		printUnanchored(env.Out, rep.BreakGlass.Unanchored)
 	}
 	return nil
+}
+
+func printUnanchored(out io.Writer, n int) {
+	if n > 0 {
+		fmt.Fprintf(out, "  %d records after the last anchor rest on the hash chain alone\n", n)
+	}
 }

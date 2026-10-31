@@ -28,14 +28,18 @@ type Report struct {
 	Approvals   int
 	Omitted     int
 	Anchors     []anchor.Checked
+	// Unanchored counts ledger records after the last anchored one: they
+	// rest on the hash chain alone.
+	Unanchored int
 	// BreakGlass is set when the export includes the break-glass ledger.
 	BreakGlass *ChainReport
 }
 
 // ChainReport covers a ledger exported without content (break-glass).
 type ChainReport struct {
-	Records int
-	Anchors []anchor.Checked
+	Records    int
+	Anchors    []anchor.Checked
+	Unanchored int
 }
 
 type verifier struct {
@@ -88,7 +92,7 @@ func (v *verifier) run(trust anchor.Trust) error {
 		return fmt.Errorf("ledger: %v", err)
 	}
 	v.rep.Records = len(recs)
-	if v.rep.Anchors, err = v.anchors("anchors.json", recs, trust); err != nil {
+	if v.rep.Anchors, v.rep.Unanchored, err = v.anchors("anchors.json", recs, trust); err != nil {
 		return err
 	}
 
@@ -250,11 +254,11 @@ func (v *verifier) run(trust anchor.Trust) error {
 				return fmt.Errorf("break-glass ledger: %v", err)
 			}
 		}
-		ch, err := v.anchors("break-glass/anchors.json", bg, trust)
+		ch, un, err := v.anchors("break-glass/anchors.json", bg, trust)
 		if err != nil {
 			return fmt.Errorf("break-glass: %v", err)
 		}
-		v.rep.BreakGlass = &ChainReport{Records: len(bg), Anchors: ch}
+		v.rep.BreakGlass = &ChainReport{Records: len(bg), Anchors: ch, Unanchored: un}
 	} else if m.BreakGlass {
 		return errors.New("manifest says the break-glass ledger is included, but it is missing")
 	}
@@ -262,19 +266,35 @@ func (v *verifier) run(trust anchor.Trust) error {
 	return nil
 }
 
-func (v *verifier) anchors(name string, recs []core.AuditRecord, trust anchor.Trust) ([]anchor.Checked, error) {
+// anchors checks a chain's anchors and returns them with the number of
+// records after the last anchored one.
+//
+// With a pinned key an export must carry anchors: someone who rewrote the
+// ledger consistently would otherwise only have to drop them. Dropping some
+// does not help: any remaining anchor covers every record up to its own seq
+// through the hash chain. Anchors cut from the end shrink that coverage, and
+// cannot be detected offline, so the uncovered count is always reported.
+func (v *verifier) anchors(name string, recs []core.AuditRecord, trust anchor.Trust) ([]anchor.Checked, int, error) {
 	var ps []core.AnchorProof
 	if err := readJSON(filepath.Join(v.side, filepath.FromSlash(name)), &ps); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(ps) == 0 {
-		return nil, nil
+		if trust.Key != nil && len(recs) > 0 {
+			return nil, 0, fmt.Errorf("%s carries no anchors: nothing ties this ledger to the pinned key", name)
+		}
+		return nil, len(recs), nil
 	}
+	sort.Slice(ps, func(i, j int) bool { return ps[i].Statement.Seq < ps[j].Statement.Seq })
 	ch, err := anchor.VerifyChain(recs, ps, trust)
 	if err != nil {
-		return nil, fmt.Errorf("anchors: %v", err)
+		return nil, 0, fmt.Errorf("anchors: %v", err)
 	}
-	return ch, nil
+	var last int64
+	for _, c := range ch {
+		last = max(last, c.Leaf.Seq)
+	}
+	return ch, len(recs) - int(last), nil
 }
 
 // tree checks that a Git tree holds exactly a Strata tree's entries.

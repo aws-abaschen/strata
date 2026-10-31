@@ -92,9 +92,13 @@ func download(ctx context.Context, c *Client, repo string, h core.Hash) ([]byte,
 		return nil, err
 	}
 	defer rc.Close()
-	b, err := io.ReadAll(io.LimitReader(rc, 1<<30))
+	const limit = 1 << 30
+	b, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(b) > limit {
+		return nil, fmt.Errorf("object %s is larger than 1 GiB, which this command does not handle yet", h.Short())
 	}
 	if core.HashBytes(b) != h {
 		return nil, fmt.Errorf("object %s: content does not match its hash", h.Short())

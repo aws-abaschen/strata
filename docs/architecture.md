@@ -241,13 +241,14 @@ is the specification.
   amended-away history.
 - **Two verifiers.** The Go one shares Strata's code. `tools/verify_export.py` uses
   only Python's standard library (openssl for signatures) and was written from the
-  spec. The test suite runs both on every build, against a clean export and eight
-  kinds of tampering, so the spec cannot drift from the code without a failing test.
+  spec. The test suite runs both on every build, against a clean export and each
+  kind of tampering it knows of, so the spec cannot drift from the code without a failing test.
 - **Limits.** Layer cascades are not flattened: each repository exports its own tree,
   and Layers export separately. `.git` entries and refs Git rejects stay in the
   sidecar only. The Python verifier leaves RFC 3161 timestamps to `openssl ts`.
-  Each file is held in memory while it is exported, so a file larger than memory
-  cannot be exported yet.
+  Each file is held in memory while it is exported, and files over 1 GiB are not
+  exported yet. Anchors cut from the end of an export cannot be detected offline;
+  verifiers report how many records the last anchor does not cover.
 
 ## Permissions (policy-as-code)
 

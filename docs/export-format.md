@@ -18,7 +18,8 @@ python3 tools/verify_export.py payments-export --anchor-key anchor.pem
 git clone payments-export/git payments
 ```
 
-An export needs only read access. It runs through the public API, so it works
+An export needs only read access. Each file is held in memory while it is exported,
+and files over 1 GiB are not exported yet. It runs through the public API, so it works
 against any deployment.
 
 ## Layout
@@ -109,7 +110,8 @@ the security team), never from the export.
 | ref | `refs/heads/<name>`; `HEAD` points at `main`, else the first ref by name |
 
 The export is deterministic: exporting the same repository twice gives the same Git
-object names, so two exports can be compared with `diff -r`.
+object names, so the `git/` directories of two exports can be compared with `diff -r`
+(`manifest.json` differs: it records when and by whom).
 
 **What Git cannot hold.** A tree entry named `.git` (in any case) is left out of the
 Git tree and listed in `manifest.omitted`. It stays in the sidecar tree, so the
@@ -129,9 +131,16 @@ must be there: it records every write, superseded revisions included.
 
 1. `audit.jsonl` starts at seq 1, every record names `manifest.repo`, and the hash
    chain holds.
-2. Every anchor's leaf is under its root, matches the ledger record at its seq, and
-   consecutive anchors link through `prev`. With a pinned key, every signature
-   verifies. (With a pinned timestamp root, the Go verifier also checks timestamps.)
+2. Every anchor's leaf is under its root, names this repository, matches the ledger
+   record at its seq, and consecutive anchors link through `prev`. With a pinned key,
+   every signature verifies and **an export without anchors fails**: otherwise a
+   consistently rewritten ledger would pass by dropping them. (With a pinned
+   timestamp root, the Go verifier also checks timestamps.)
+
+   A chain gets a proof only in anchors where its head moved, so anchor seqs may skip.
+   Any anchor covers every record up to its leaf through the hash chain, so dropping
+   some anchors gains nothing; dropping them from the end shrinks what is covered.
+   Verifiers report how many records come after the last anchored one.
 3. Replay the ledger:
    - every `ChangeCreated` adds `detail.revision`; if `detail.ref` is a non-empty
      string, that ref now points at the revision;
@@ -150,10 +159,12 @@ must be there: it records every write, superseded revisions included.
    - has, as parents, the commits of the change's parents, in order;
    - has the author, committer and message the mapping above gives.
 6. `refs/heads/` holds exactly the replayed refs (minus `omittedRefs`), each pointing
-   at its target's commit.
+   at its target's commit. Every name in `omittedRefs` must really be one Git rejects;
+   otherwise the manifest could hide a ref.
 7. `annotations.jsonl` and `approvals.jsonl` equal the replayed ones, one for one.
 8. `repo.json`'s `extends` equals the replayed Layer setting.
-9. If `break-glass/` is present, its ledger and anchors pass checks 1 and 2.
+9. If `break-glass/` is present, its ledger and anchors pass checks 1 and 2. If
+   `manifest.breakGlass` is true, it must be present.
 
 A verifier must report the first failure in words that name what is wrong (which
 revision, ref or file). It exits non-zero on failure.
@@ -164,7 +175,9 @@ revision, ref or file). It exits non-zero on failure.
   have rewritten the ledger before the export. Anchors signed with a key the operator
   does not control, checked against a key pinned out of band, close that gap for
   everything up to the last anchor. Writes after the last anchor rest on the hash
-  chain alone.
+  chain alone, and an export could omit the latest anchors without detection;
+  compare against anchors you verified earlier (`strata audit --verify` keeps them in
+  `.strata/anchors.json`).
 - **That Strata authorized each write.** The ledger records who did what. Whether
   policy allowed it is shown by the policy repository's own export, at the revision
   in force.

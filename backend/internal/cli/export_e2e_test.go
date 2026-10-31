@@ -10,6 +10,7 @@ import (
 	"crypto/sha1"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -28,6 +29,7 @@ import (
 func TestExportRoundTrip(t *testing.T) {
 	h := newHarness(t)
 	const ana, bob = "ana@example.com", "bob@example.com"
+	const root = "root@example.com;strata-admins"
 
 	base := t.TempDir()
 	h.ok(base, ana, "repo", "create", "base", "--layer")
@@ -39,12 +41,12 @@ func TestExportRoundTrip(t *testing.T) {
 	h.ok(dir, ana, "repo", "create", "payments", "--extends", "base")
 	h.ok(dir, ana, "init", "--repo", "payments")
 	write(t, dir, map[string]string{"a.txt": "v1\n", "docs/R&D notes.md": "# notes\n", "empty/.keep": ""})
-	h.ok(dir, ana, "push", "-m", "PAY-1 first")
+	h.ok(dir, ana, "push", "-m", "PAY-1 first: R&D <draft> café   done")
 	write(t, dir, map[string]string{"a.txt": "v2\n"})
 	h.ok(dir, ana, "push", "-m", "PAY-2 second")
 	write(t, dir, map[string]string{"a.txt": "v2 amended\n"})
 	h.ok(dir, ana, "push", "--amend", "-m", "PAY-2 second, amended")
-	h.ok(dir, bob, "annotate", "--note", "reviewed", "--label", "risk:low")
+	h.ok(dir, bob, "annotate", "--note", "reviewed <ok> & signé", "--label", "risk:low")
 	h.ok(dir, bob, "approve", "--note", "fine")
 	write(t, dir, map[string]string{"b.txt": "review me\n"})
 	h.ok(dir, ana, "push", "--review", "feature", "-m", "PAY-3 on review")
@@ -64,12 +66,19 @@ func TestExportRoundTrip(t *testing.T) {
 	if rep, err := job.Run(context.Background()); err != nil || rep.Anchored == 0 {
 		t.Fatalf("second anchor: %+v %v", rep, err)
 	}
+	// Break-glass activity moves only that chain's head: anchor 3 carries no
+	// payments proof, so payments' anchors are 1 and 2.
+	h.ok(t.TempDir(), root, "breakglass", "start", "--reason", "export test incident", "--work-item", "INC-7", "--repo", "payments", "--for", "10m")
+	h.ok(t.TempDir(), root, "breakglass", "end")
+	if _, err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	der, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	keyFile := filepath.Join(t.TempDir(), "anchor.pem")
 	os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644)
 
 	out := filepath.Join(t.TempDir(), "export")
-	got := h.ok(dir, "auditor@example.com", "export", "--out", out)
+	got := h.ok(dir, root, "export", "--out", out, "--break-glass")
 	// 4 revisions: first, second, its amend, and the deleted review change.
 	if !strings.Contains(got, "exported payments") || !strings.Contains(got, "4 changes") || !strings.Contains(got, "1 refs") {
 		t.Fatalf("export:\n%s", got)
@@ -79,21 +88,21 @@ func TestExportRoundTrip(t *testing.T) {
 	}
 	res, code := verify(out)
 	if code != 0 || !strings.Contains(res, "4 changes") || !strings.Contains(res, "2 annotations, 1 approvals") ||
-		!strings.Contains(res, "signatures: verified with the pinned anchor key") || !strings.Contains(res, "anchored 2 times") {
+		!strings.Contains(res, "signatures: verified with the pinned anchor key") || !strings.Contains(res, "anchored 2 times") || !strings.Contains(res, "verified 2 break-glass records") {
 		t.Fatalf("verify (exit %d):\n%s", code, res)
 	}
 
 	// The independent verifier, written from the spec in Python, agrees.
 	py := pythonVerifier(t, keyFile)
 	if py != nil {
-		if o, code := py(out); code != 0 || !strings.Contains(o, "4 changes") || !strings.Contains(o, "2 anchors") || !strings.Contains(o, "verified with the pinned key") {
+		if o, code := py(out); code != 0 || !strings.Contains(o, "4 changes") || !strings.Contains(o, "2 anchors") || !strings.Contains(o, "2 break-glass records") || !strings.Contains(o, "verified with the pinned key") {
 			t.Fatalf("Python verifier (exit %d):\n%s", code, o)
 		}
 	}
 
 	// Exports are reproducible: a second run gives the same Git commits.
 	out2 := filepath.Join(t.TempDir(), "export")
-	h.ok(dir, "auditor@example.com", "export", "--out", out2)
+	h.ok(dir, root, "export", "--out", out2, "--break-glass")
 	if a, b := gitRef(t, out, "git/refs/heads/main"), gitRef(t, out2, "git/refs/heads/main"); a != b {
 		t.Fatalf("not reproducible: %s vs %s", a, b)
 	}
@@ -160,6 +169,21 @@ func TestExportRoundTrip(t *testing.T) {
 			p := filepath.Join(d, "strata", "audit.jsonl")
 			b, _ := os.ReadFile(p)
 			os.WriteFile(p, bytes.Replace(b, []byte(`"actor":"bob@example.com"`), []byte(`"actor":"eve@example.com"`), 1), 0o644)
+		}},
+		{"anchors stripped", "carries no anchors", func(d string) {
+			os.WriteFile(filepath.Join(d, "strata", "anchors.json"), []byte("[]"), 0o644)
+		}},
+		{"ref hidden as omitted", "Git can hold", func(d string) {
+			p := filepath.Join(d, "strata", "manifest.json")
+			var m map[string]any
+			json.Unmarshal(mustRead(t, p), &m)
+			m["omittedRefs"] = []string{"main"}
+			b, _ := json.Marshal(m)
+			os.WriteFile(p, b, 0o644)
+			os.Remove(filepath.Join(d, "git", "refs", "heads", "main"))
+		}},
+		{"break-glass ledger removed", "break-glass ledger is included, but it is missing", func(d string) {
+			os.RemoveAll(filepath.Join(d, "strata", "break-glass"))
 		}},
 		{"ledger tail cut", "anchors", func(d string) {
 			p := filepath.Join(d, "strata", "audit.jsonl")

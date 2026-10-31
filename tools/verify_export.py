@@ -112,9 +112,17 @@ def statement_bytes(s):
                     "leaves": s["leaves"], "createdAt": s["createdAt"]}).encode()
 
 
-def verify_anchors(proofs, recs, key):
+def verify_anchors(proofs, recs, key, name):
+    # Returns (anchors checked, records after the last anchored one).
+    if not proofs:
+        if key and recs:
+            raise Failed("%s carries no anchors: nothing ties this ledger to the pinned key" % name)
+        return 0, len(recs)
+    # A chain only gets a proof in anchors where its head moved, so seqs can
+    # skip. Any anchor covers every record up to its leaf through the chain.
+    proofs = sorted(proofs, key=lambda p: p["statement"]["seq"])
     by_seq = {r["seq"]: r["hash"] for r in recs}
-    prev, prev_seq = None, 0
+    prev, prev_seq, last = None, 0, 0
     for p in proofs:
         s, leaf = p["statement"], p["leaf"]
         if s["v"] != 1:
@@ -129,9 +137,10 @@ def verify_anchors(proofs, recs, key):
         if prev is not None and s["seq"] == prev_seq + 1 and s["prev"] != prev:
             raise Failed("anchor %d does not link to anchor %d" % (s["seq"], prev_seq))
         prev, prev_seq = digest.hex(), s["seq"]
+        last = max(last, leaf["seq"])
         if key:
             check_signature(key, digest, p["seal"]["signature"], s["seq"])
-    return len(proofs)
+    return len(proofs), len(recs) - last
 
 
 def check_signature(key, digest, sig_b64, seq):
@@ -197,6 +206,15 @@ class Git:
         return c
 
 
+def valid_git_ref(n):
+    # Same rule as the Go exporter: no component starting with "." or ending
+    # in ".lock", no trailing ".", and already in clean form.
+    parts = n.split("/")
+    if any(p.startswith(".") or p.endswith(".lock") for p in parts) or n.endswith("."):
+        return False
+    return "" not in parts
+
+
 MODES = {"file": "100644", "exec": "100755", "dir": "40000"}
 
 
@@ -211,7 +229,7 @@ def verify(d, key=None):
     if not recs:
         raise Failed("the ledger is empty")
     verify_chain(recs, repo)
-    anchors = verify_anchors(read_json(os.path.join(side, "anchors.json")), recs, key)
+    anchors, unanchored = verify_anchors(read_json(os.path.join(side, "anchors.json")), recs, key, "anchors.json")
 
     revs, refs, anns, apps, extends = {}, {}, [], [], None
     for r in recs:
@@ -302,6 +320,9 @@ def verify(d, key=None):
 
     heads = git.refs("refs/heads")
     omitted = set(m.get("omittedRefs") or [])
+    for name in omitted:
+        if valid_git_ref(name):
+            raise Failed("manifest omits ref %r, which Git can hold" % name)
     for name, target in refs.items():
         if name in omitted:
             continue
@@ -322,13 +343,17 @@ def verify(d, key=None):
         raise Failed("repo.json Layer setting differs from the ledger")
 
     bg = os.path.join(side, "break-glass", "audit.jsonl")
-    bg_recs = None
+    bg_recs, bg_anchors = None, 0
     if os.path.exists(bg):
         bg_recs = read_jsonl(bg)
         verify_chain(bg_recs)
-        verify_anchors(read_json(os.path.join(side, "break-glass", "anchors.json")), bg_recs, key)
+        bg_anchors, _ = verify_anchors(read_json(os.path.join(side, "break-glass", "anchors.json")), bg_recs, key,
+                                       "break-glass/anchors.json")
+    elif m.get("breakGlass"):
+        raise Failed("manifest says the break-glass ledger is included, but it is missing")
     return {"repo": repo, "records": len(recs), "changes": len(revs), "refs": len(heads), "anchors": anchors,
-            "annotations": len(anns), "approvals": len(apps), "breakGlassRecords": None if bg_recs is None else len(bg_recs)}
+            "unanchored": unanchored, "annotations": len(anns), "approvals": len(apps),
+            "breakGlassRecords": bg_recs, "breakGlassAnchors": bg_anchors}
 
 
 def main(argv):
@@ -349,7 +374,15 @@ def main(argv):
         return 1
     print("verified export of %(repo)s: %(records)d ledger records, %(changes)d changes, %(refs)d refs, "
           "%(annotations)d annotations, %(approvals)d approvals, %(anchors)d anchors" % r)
-    print("  anchor signatures: %s" % ("verified with the pinned key (openssl)" if key else "NOT checked (--anchor-key)"))
+    if r["unanchored"]:
+        print("  %d records after the last anchor rest on the hash chain alone" % r["unanchored"])
+    if r["breakGlassRecords"] is not None:
+        print("verified %d break-glass records, %d anchors" % (len(r["breakGlassRecords"]), r["breakGlassAnchors"]))
+    signed = r["anchors"] + r["breakGlassAnchors"]
+    if not key:
+        print("  anchor signatures: NOT checked (--anchor-key)")
+    else:
+        print("  anchor signatures: %d verified with the pinned key (openssl)" % signed)
     print("  timestamps: not checked by this tool (see docs/export-format.md, openssl ts -verify)")
     return 0
 
