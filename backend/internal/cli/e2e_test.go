@@ -16,13 +16,9 @@ import (
 	"github.com/aws-abaschen/strata/backend/internal/store"
 )
 
-// recorder keeps published events.
+// recorder keeps the actions of committed audit records, which the ledger
+// Lambda publishes as events in AWS.
 type recorder struct{ types []string }
-
-func (r *recorder) Publish(_ context.Context, t string, _ any) error {
-	r.types = append(r.types, t)
-	return nil
-}
 
 type harness struct {
 	t      *testing.T
@@ -36,7 +32,8 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	mem := store.NewMemory()
 	ev := &recorder{}
-	a := &api.API{Objects: mem, Meta: mem, Events: ev, WebURL: "https://strata.example.com"}
+	mem.OnAudit = func(r core.AuditRecord) { ev.types = append(ev.types, r.Action) }
+	a := &api.API{Objects: mem, Meta: mem, WebURL: "https://strata.example.com"}
 	h := a.Handler()
 	mux := http.NewServeMux()
 	mux.Handle("/_objects/", mem.UploadHandler())

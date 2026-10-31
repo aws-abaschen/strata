@@ -53,5 +53,15 @@ test('tracker gets change events with retries and a DLQ', () => {
 })
 
 test('lambdas are arm64 Go custom runtime', () => {
-  template.resourcePropertiesCountIs('AWS::Lambda::Function', { Runtime: 'provided.al2023', Architectures: ['arm64'] }, 2)
+  template.resourcePropertiesCountIs('AWS::Lambda::Function', { Runtime: 'provided.al2023', Architectures: ['arm64'] }, 3)
+})
+
+test('audit records stream to the ledger, archived under Object Lock', () => {
+  template.hasResourceProperties('AWS::S3::Bucket', {
+    ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled', Rule: { DefaultRetention: { Mode: 'GOVERNANCE', Days: 365 } } },
+  })
+  template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+    FilterCriteria: { Filters: [{ Pattern: Match.stringLikeRegexp('AUDIT#') }] },
+    BisectBatchOnFunctionError: true,
+  })
 })

@@ -50,46 +50,40 @@ type RefUpdate struct {
 
 // Meta is the index of repositories, refs and changes.
 type Meta interface {
-	CreateRepo(ctx context.Context, r core.Repo) error
+	// Every write takes an AuditEntry, stored as the next record of the
+	// repository's hash-chained ledger in the same transaction.
+	CreateRepo(ctx context.Context, r core.Repo, audit core.AuditEntry) error
 	GetRepo(ctx context.Context, name string) (core.Repo, error)
 	ListRepos(ctx context.Context) ([]core.Repo, error)
 	// UpdateRepo saves settings with compare-and-swap on the Layer the repo
 	// extended before (nil = none), and keeps the subscriber index in step.
-	UpdateRepo(ctx context.Context, r core.Repo, previous *core.LayerRef) error
+	UpdateRepo(ctx context.Context, r core.Repo, previous *core.LayerRef, audit core.AuditEntry) error
 	// ListSubscribers returns the repositories that directly extend a Layer.
 	ListSubscribers(ctx context.Context, layer string) ([]core.Repo, error)
 
 	ListRefs(ctx context.Context, repo string) ([]core.Ref, error)
 	GetRef(ctx context.Context, repo, name string) (core.Ref, error)
 	// UpdateRef moves a ref with compare-and-swap. An empty target deletes it.
-	UpdateRef(ctx context.Context, repo string, ref core.Ref, expected core.Hash) error
+	UpdateRef(ctx context.Context, repo string, ref core.Ref, expected core.Hash, audit core.AuditEntry) error
 
 	// PutChange records a sealed change atomically: the revision, the change
 	// id pointer (which must still point at c.Predecessor), the work-item and
 	// label index entries, and the optional ref move.
-	PutChange(ctx context.Context, c core.Change, ref *RefUpdate) error
+	PutChange(ctx context.Context, c core.Change, ref *RefUpdate, audit core.AuditEntry) error
 	GetChange(ctx context.Context, repo string, rev core.Hash) (core.Change, error)
 	// LatestRevision returns the newest revision of a change id.
 	LatestRevision(ctx context.Context, repo, changeID string) (core.Hash, error)
 
-	PutAnnotation(ctx context.Context, a core.Annotation) error
+	PutAnnotation(ctx context.Context, a core.Annotation, audit core.AuditEntry) error
 	ListAnnotations(ctx context.Context, repo string, rev core.Hash) ([]core.Annotation, error)
 
 	// FindByWorkItem and FindByLabel search across all repositories, newest first.
 	FindByWorkItem(ctx context.Context, system, key string, limit int) ([]core.ChangeSummary, error)
 	FindByLabel(ctx context.Context, label string, limit int) ([]core.ChangeSummary, error)
+
+	// ListAudit returns a repository's ledger records with seq > after, in order.
+	ListAudit(ctx context.Context, repo string, after int64, limit int) ([]core.AuditRecord, error)
 }
-
-// Events publishes domain events (to EventBridge in AWS).
-type Events interface {
-	Publish(ctx context.Context, detailType string, detail any) error
-}
-
-// NoEvents drops every event.
-type NoEvents struct{}
-
-// Publish does nothing.
-func (NoEvents) Publish(context.Context, string, any) error { return nil }
 
 // headerMap flattens signed headers for the client, minus Host.
 func headerMap(h http.Header) map[string]string {

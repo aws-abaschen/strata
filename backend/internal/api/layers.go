@@ -103,11 +103,15 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rp.UpdatedBy, rp.UpdatedAt = identity(r), a.now().UTC()
-	if err := a.Meta.UpdateRepo(ctx, rp, previous); err != nil {
+	entry, err := a.audit(r, "RepoSettingsChanged", map[string]any{"repo": rp.Name, "settings": rp, "previousExtends": previous})
+	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	a.publish(ctx, "RepoSettingsChanged", map[string]any{"repo": rp, "previousExtends": previous})
+	if err := a.Meta.UpdateRepo(ctx, rp, previous, entry); err != nil {
+		a.fail(w, r, err)
+		return
+	}
 
 	// Tell the caller now if the current main already holds files the new
 	// Layer locks: the next push will be rejected until they are removed.

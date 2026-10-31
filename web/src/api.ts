@@ -170,6 +170,7 @@ export class Api {
     this.call<{ repo: Repo; violations: Violation[] }>('PUT', `/repos/${enc(repo)}/settings`, { extends: ext })
   layers = (repo: string, ref: string) =>
     this.call<Effective>('GET', `/repos/${enc(repo)}/layers?ref=${encodeURIComponent(ref)}&content=true`)
+  auditPage = (repo: string, after = 0) => this.call<AuditPage>('GET', `/repos/${enc(repo)}/audit?after=${after}&limit=200`)
   subscribers = (layer: string) =>
     this.call<{ subscribers: Subscriber[] }>('GET', `/repos/${enc(layer)}/subscribers`).then((r) => r.subscribers)
   repo = (repo: string) => this.call<Repo>('GET', `/repos/${enc(repo)}`)
@@ -190,3 +191,22 @@ export class Api {
 }
 
 const enc = encodeURIComponent
+
+export interface AuditRecord {
+  repo: string
+  seq: number
+  prev: Hash
+  hash: Hash
+  at: string
+  actor: string
+  action: string
+  detail: Record<string, unknown>
+}
+
+export interface AuditPage {
+  records: AuditRecord[]
+  verified: boolean
+  error?: string
+  next?: number
+}
+

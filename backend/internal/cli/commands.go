@@ -27,6 +27,7 @@ Usage:
   strata show [REV]                             one change with its annotations
   strata annotate [REV] [--note TEXT] [metadata]
   strata find --work-item KEY | --label LABEL   search every repository
+  strata audit [-n 20] [--verify]               the ledger, hash chain verified here
 
 Layers (configuration inherited top-down):
   strata repo create NAME --layer               a Layer repository
@@ -267,6 +268,13 @@ func run(ctx context.Context, args []string, env Env) error {
 		return nil
 	case "layers":
 		return layersCmd(ctx, c, st, root, args, env.Out)
+	case "audit":
+		n := fs.Int("n", 20, "records to print")
+		verify := fs.Bool("verify", false, "only verify, print nothing else")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		return auditCmd(ctx, c, st.Repo, *n, *verify, env.Out)
 	case "find":
 		wi := fs.String("work-item", "", "work item")
 		label := fs.String("label", "", "label")
@@ -377,7 +385,7 @@ func reorder(args []string) []string {
 
 func isBool(f string) bool {
 	switch strings.TrimLeft(f, "-") {
-	case "amend", "layer":
+	case "amend", "layer", "verify":
 		return true
 	}
 	return false

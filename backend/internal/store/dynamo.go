@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -110,7 +113,7 @@ func subsKey(layer, repo string) map[string]types.AttributeValue {
 }
 
 // CreateRepo implements Meta.
-func (d *Dynamo) CreateRepo(ctx context.Context, r core.Repo) error {
+func (d *Dynamo) CreateRepo(ctx context.Context, r core.Repo, audit core.AuditEntry) error {
 	it, err := repoItem(r)
 	if err != nil {
 		return err
@@ -123,11 +126,11 @@ func (d *Dynamo) CreateRepo(ctx context.Context, r core.Repo) error {
 		}
 		tx = append(tx, types.TransactWriteItem{Put: &types.Put{Item: sub}})
 	}
-	return d.transact(ctx, tx)
+	return d.transact(ctx, r.Name, audit, tx)
 }
 
 // UpdateRepo implements Meta.
-func (d *Dynamo) UpdateRepo(ctx context.Context, r core.Repo, previous *core.LayerRef) error {
+func (d *Dynamo) UpdateRepo(ctx context.Context, r core.Repo, previous *core.LayerRef, audit core.AuditEntry) error {
 	it, err := repoItem(r)
 	if err != nil {
 		return err
@@ -150,7 +153,7 @@ func (d *Dynamo) UpdateRepo(ctx context.Context, r core.Repo, previous *core.Lay
 		}
 		tx = append(tx, types.TransactWriteItem{Put: &types.Put{Item: sub}})
 	}
-	err = d.transact(ctx, tx)
+	err = d.transact(ctx, r.Name, audit, tx)
 	if errors.Is(err, ErrExists) { // item 0 failed: the repo is gone
 		return ErrNotFound
 	}
@@ -232,23 +235,21 @@ func refCondition(expected core.Hash) (*string, map[string]types.AttributeValue)
 }
 
 // UpdateRef implements Meta.
-func (d *Dynamo) UpdateRef(ctx context.Context, repo string, ref core.Ref, expected core.Hash) error {
+func (d *Dynamo) UpdateRef(ctx context.Context, repo string, ref core.Ref, expected core.Hash, audit core.AuditEntry) error {
 	cond, vals := refCondition(expected)
-	var err error
+	var w types.TransactWriteItem
 	if ref.Target == "" {
-		_, err = d.Client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-			TableName: &d.Table, Key: map[string]types.AttributeValue{"PK": s(repoPK(repo)), "SK": s("REF#" + ref.Name)},
-			ConditionExpression: cond, ExpressionAttributeValues: vals,
-		})
+		w.Delete = &types.Delete{Key: map[string]types.AttributeValue{"PK": s(repoPK(repo)), "SK": s("REF#" + ref.Name)},
+			ConditionExpression: cond, ExpressionAttributeValues: vals}
 	} else {
-		var it map[string]types.AttributeValue
-		it, err = item(repoPK(repo), "REF#"+ref.Name, ref, map[string]types.AttributeValue{"target": s(string(ref.Target))})
+		it, err := item(repoPK(repo), "REF#"+ref.Name, ref, map[string]types.AttributeValue{"target": s(string(ref.Target))})
 		if err != nil {
 			return err
 		}
-		_, err = d.Client.PutItem(ctx, &dynamodb.PutItemInput{TableName: &d.Table, Item: it, ConditionExpression: cond, ExpressionAttributeValues: vals})
+		w.Put = &types.Put{Item: it, ConditionExpression: cond, ExpressionAttributeValues: vals}
 	}
-	if isConditionFailed(err) {
+	err := d.transact(ctx, repo, audit, []types.TransactWriteItem{w})
+	if errors.Is(err, ErrExists) { // the only item is the CAS
 		return ErrConflict
 	}
 	return err
@@ -275,7 +276,7 @@ func indexItems(md core.Metadata, sum core.ChangeSummary) ([]types.TransactWrite
 }
 
 // PutChange implements Meta.
-func (d *Dynamo) PutChange(ctx context.Context, c core.Change, ref *RefUpdate) error {
+func (d *Dynamo) PutChange(ctx context.Context, c core.Change, ref *RefUpdate, audit core.AuditEntry) error {
 	pk := repoPK(c.Repo)
 	rev, err := item(pk, "REV#"+string(c.Revision), c, nil)
 	if err != nil {
@@ -305,36 +306,101 @@ func (d *Dynamo) PutChange(ctx context.Context, c core.Change, ref *RefUpdate) e
 	if err != nil {
 		return err
 	}
-	return d.transact(ctx, append(tx, idx...))
+	return d.transact(ctx, c.Repo, audit, append(tx, idx...))
 }
 
-// transact sets the table name on every item and maps condition failures.
-// The first item is always the "create" whose failure means ErrExists.
-func (d *Dynamo) transact(ctx context.Context, tx []types.TransactWriteItem) error {
-	for _, t := range tx {
-		switch {
-		case t.Put != nil:
-			t.Put.TableName = &d.Table
-		case t.ConditionCheck != nil:
-			t.ConditionCheck.TableName = &d.Table
-		case t.Delete != nil:
-			t.Delete.TableName = &d.Table
-		}
+// Audit ledger items:
+//
+//	PK=REPO#<repo>   SK=AUDITHEAD   seq and hash of the last record (CAS)
+//	PK=AUDIT#<repo>  SK=<seq, 12 digits>  the record (streamed to the ledger Lambda)
+func auditSK(seq int64) string { return fmt.Sprintf("%012d", seq) }
+
+func (d *Dynamo) auditHead(ctx context.Context, repo string) (int64, core.Hash, error) {
+	it, err := d.get(ctx, repoPK(repo), "AUDITHEAD")
+	if errors.Is(err, ErrNotFound) {
+		return 0, "", nil
 	}
-	_, err := d.Client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: tx})
-	var tce *types.TransactionCanceledException
-	if errors.As(err, &tce) {
-		for i, r := range tce.CancellationReasons {
-			if aws.ToString(r.Code) == "ConditionalCheckFailed" {
-				if i == 0 {
-					return ErrExists
-				}
-				return ErrConflict
+	if err != nil {
+		return 0, "", err
+	}
+	n, _ := it["seq"].(*types.AttributeValueMemberN)
+	h, _ := it["hash"].(*types.AttributeValueMemberS)
+	if n == nil || h == nil {
+		return 0, "", errors.New("corrupt audit head")
+	}
+	seq, err := strconv.ParseInt(n.Value, 10, 64)
+	return seq, core.Hash(h.Value), err
+}
+
+// transact writes tx and the repository's next audit record atomically.
+// Condition failures map to ErrExists (item 0) or ErrConflict; losing the
+// race for the audit head retries with the new head.
+func (d *Dynamo) transact(ctx context.Context, repo string, audit core.AuditEntry, tx []types.TransactWriteItem) error {
+	for attempt := 0; attempt < 8; attempt++ {
+		seq, prev, err := d.auditHead(ctx, repo)
+		if err != nil {
+			return err
+		}
+		rec, err := core.NextAuditRecord(repo, seq, prev, audit)
+		if err != nil {
+			return err
+		}
+		recItem, err := item("AUDIT#"+repo, auditSK(rec.Seq), rec, map[string]types.AttributeValue{"action": s(rec.Action)})
+		if err != nil {
+			return err
+		}
+		head := map[string]types.AttributeValue{
+			"PK": s(repoPK(repo)), "SK": s("AUDITHEAD"),
+			"seq": &types.AttributeValueMemberN{Value: strconv.FormatInt(rec.Seq, 10)}, "hash": s(string(rec.Hash)),
+		}
+		headPut := &types.Put{Item: head, ConditionExpression: aws.String("attribute_not_exists(PK)")}
+		if seq > 0 {
+			headPut = &types.Put{Item: head, ConditionExpression: aws.String("seq = :s"),
+				ExpressionAttributeValues: map[string]types.AttributeValue{":s": &types.AttributeValueMemberN{Value: strconv.FormatInt(seq, 10)}}}
+		}
+		all := append(slices.Clone(tx),
+			types.TransactWriteItem{Put: &types.Put{Item: recItem, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
+			types.TransactWriteItem{Put: headPut})
+		for _, t := range all {
+			switch {
+			case t.Put != nil:
+				t.Put.TableName = &d.Table
+			case t.ConditionCheck != nil:
+				t.ConditionCheck.TableName = &d.Table
+			case t.Delete != nil:
+				t.Delete.TableName = &d.Table
 			}
 		}
-		return ErrConflict
+		_, err = d.Client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: all})
+		var tce *types.TransactionCanceledException
+		if !errors.As(err, &tce) {
+			return err
+		}
+		for i, r := range tce.CancellationReasons {
+			if aws.ToString(r.Code) != "ConditionalCheckFailed" || i >= len(tx) {
+				continue
+			}
+			if i == 0 {
+				return ErrExists
+			}
+			return ErrConflict
+		}
+		// Only the audit head moved (or a transient conflict): retry.
 	}
-	return err
+	return fmt.Errorf("%w: audit ledger busy, retry", ErrConflict)
+}
+
+// ListAudit implements Meta.
+func (d *Dynamo) ListAudit(ctx context.Context, repo string, after int64, limit int) ([]core.AuditRecord, error) {
+	items, err := d.query(ctx, &dynamodb.QueryInput{
+		KeyConditionExpression:    aws.String("PK = :p AND SK > :s"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":p": s("AUDIT#" + repo), ":s": s(auditSK(after))},
+		ConsistentRead:            aws.Bool(true),
+	}, limit)
+	if err != nil {
+		return nil, err
+	}
+	return decodeAll[core.AuditRecord](items)
 }
 
 // GetChange implements Meta.
@@ -360,7 +426,7 @@ func (d *Dynamo) LatestRevision(ctx context.Context, repo, changeID string) (cor
 }
 
 // PutAnnotation implements Meta.
-func (d *Dynamo) PutAnnotation(ctx context.Context, a core.Annotation) error {
+func (d *Dynamo) PutAnnotation(ctx context.Context, a core.Annotation, audit core.AuditEntry) error {
 	c, err := d.GetChange(ctx, a.Repo, a.Revision)
 	if err != nil {
 		return err
@@ -379,7 +445,7 @@ func (d *Dynamo) PutAnnotation(ctx context.Context, a core.Annotation) error {
 		return err
 	}
 	tx := append([]types.TransactWriteItem{{Put: &types.Put{Item: it, ConditionExpression: aws.String("attribute_not_exists(PK)")}}}, idx...)
-	return d.transact(ctx, tx)
+	return d.transact(ctx, a.Repo, audit, tx)
 }
 
 // ListAnnotations implements Meta.

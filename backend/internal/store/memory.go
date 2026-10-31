@@ -28,6 +28,11 @@ type Memory struct {
 	pointers    map[string]core.Hash
 	annotations map[string][]core.Annotation
 	index       map[string][]core.ChangeSummary
+	audits      map[string][]core.AuditRecord
+
+	// OnAudit, if set, sees each audit record as it is written, like the
+	// DynamoDB stream does in AWS. It must not call the store.
+	OnAudit func(core.AuditRecord)
 }
 
 // NewMemory returns an empty store.
@@ -35,7 +40,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		objects: map[string][]byte{}, changeDocs: map[string][]byte{}, repos: map[string]core.Repo{},
 		refs: map[string]map[string]core.Ref{}, changes: map[string]core.Change{}, pointers: map[string]core.Hash{},
-		annotations: map[string][]core.Annotation{}, index: map[string][]core.ChangeSummary{},
+		annotations: map[string][]core.Annotation{}, index: map[string][]core.ChangeSummary{}, audits: map[string][]core.AuditRecord{},
 	}
 }
 
@@ -121,15 +126,60 @@ func (m *Memory) PutChangeDoc(_ context.Context, c core.Change, doc []byte) erro
 }
 
 // CreateRepo implements Meta.
-func (m *Memory) CreateRepo(_ context.Context, r core.Repo) error {
+func (m *Memory) CreateRepo(_ context.Context, r core.Repo, audit core.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.repos[r.Name]; ok {
 		return ErrExists
 	}
+	rec, err := m.prepareAudit(r.Name, audit)
+	if err != nil {
+		return err
+	}
 	m.repos[r.Name] = r
 	m.refs[r.Name] = map[string]core.Ref{}
+	m.commitAudit(rec)
 	return nil
+}
+
+func (m *Memory) prepareAudit(repo string, e core.AuditEntry) (core.AuditRecord, error) {
+	var seq int64
+	var prev core.Hash
+	if a := m.audits[repo]; len(a) > 0 {
+		seq, prev = a[len(a)-1].Seq, a[len(a)-1].Hash
+	}
+	return core.NextAuditRecord(repo, seq, prev, e)
+}
+
+func (m *Memory) commitAudit(r core.AuditRecord) {
+	m.audits[r.Repo] = append(m.audits[r.Repo], r)
+	if m.OnAudit != nil {
+		m.OnAudit(r)
+	}
+}
+
+// ListAudit implements Meta.
+func (m *Memory) ListAudit(_ context.Context, repo string, after int64, limit int) ([]core.AuditRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []core.AuditRecord{}
+	for _, r := range m.audits[repo] {
+		if r.Seq > after && len(out) < limit {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// TamperAudit rewrites one stored record (tests only: proves verification).
+func (m *Memory) TamperAudit(repo string, seq int64, actor string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.audits[repo] {
+		if m.audits[repo][i].Seq == seq {
+			m.audits[repo][i].Actor = actor
+		}
+	}
 }
 
 // GetRepo implements Meta.
@@ -156,7 +206,7 @@ func (m *Memory) ListRepos(context.Context) ([]core.Repo, error) {
 }
 
 // UpdateRepo implements Meta.
-func (m *Memory) UpdateRepo(_ context.Context, r core.Repo, previous *core.LayerRef) error {
+func (m *Memory) UpdateRepo(_ context.Context, r core.Repo, previous *core.LayerRef, audit core.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.repos[r.Name]
@@ -166,7 +216,12 @@ func (m *Memory) UpdateRepo(_ context.Context, r core.Repo, previous *core.Layer
 	if extendsKey(cur.Extends) != extendsKey(previous) {
 		return ErrConflict
 	}
+	rec, err := m.prepareAudit(r.Name, audit)
+	if err != nil {
+		return err
+	}
 	m.repos[r.Name] = r
+	m.commitAudit(rec)
 	return nil
 }
 
@@ -216,10 +271,14 @@ func (m *Memory) casRef(repo string, ref core.Ref, expected core.Hash) error {
 }
 
 // UpdateRef implements Meta.
-func (m *Memory) UpdateRef(_ context.Context, repo string, ref core.Ref, expected core.Hash) error {
+func (m *Memory) UpdateRef(_ context.Context, repo string, ref core.Ref, expected core.Hash, audit core.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.casRef(repo, ref, expected); err != nil {
+		return err
+	}
+	rec, err := m.prepareAudit(repo, audit)
+	if err != nil {
 		return err
 	}
 	if ref.Target == "" {
@@ -227,11 +286,12 @@ func (m *Memory) UpdateRef(_ context.Context, repo string, ref core.Ref, expecte
 	} else {
 		m.refs[repo][ref.Name] = ref
 	}
+	m.commitAudit(rec)
 	return nil
 }
 
 // PutChange implements Meta.
-func (m *Memory) PutChange(_ context.Context, c core.Change, ref *RefUpdate) error {
+func (m *Memory) PutChange(_ context.Context, c core.Change, ref *RefUpdate, audit core.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pk := c.Repo + "/" + c.ChangeID
@@ -245,11 +305,18 @@ func (m *Memory) PutChange(_ context.Context, c core.Change, ref *RefUpdate) err
 		if err := m.casRef(c.Repo, core.Ref{Name: ref.Name}, ref.Expected); err != nil {
 			return err
 		}
+	}
+	rec, err := m.prepareAudit(c.Repo, audit)
+	if err != nil {
+		return err
+	}
+	if ref != nil {
 		m.refs[c.Repo][ref.Name] = core.Ref{Name: ref.Name, Target: c.Revision, UpdatedBy: c.Author, UpdatedAt: c.CreatedAt}
 	}
 	m.changes[okey(c.Repo, c.Revision)] = c
 	m.pointers[pk] = c.Revision
 	m.addIndex(c.Metadata, c.Summary())
+	m.commitAudit(rec)
 	return nil
 }
 
@@ -285,18 +352,23 @@ func (m *Memory) LatestRevision(_ context.Context, repo, changeID string) (core.
 }
 
 // PutAnnotation implements Meta.
-func (m *Memory) PutAnnotation(_ context.Context, a core.Annotation) error {
+func (m *Memory) PutAnnotation(_ context.Context, a core.Annotation, audit core.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.changes[okey(a.Repo, a.Revision)]
 	if !ok {
 		return ErrNotFound
 	}
+	rec, err := m.prepareAudit(a.Repo, audit)
+	if err != nil {
+		return err
+	}
 	k := okey(a.Repo, a.Revision)
 	m.annotations[k] = append(m.annotations[k], a)
 	s := c.Summary()
 	s.Via = "annotation"
 	m.addIndex(a.Metadata, s)
+	m.commitAudit(rec)
 	return nil
 }
 

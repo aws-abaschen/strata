@@ -22,7 +22,8 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | `strata` CLI: init, clone, status, push, log, show, annotate, find | done |
 | Web console: repos, history, change detail, file browser, annotate, search | done |
 | Layers: org → business unit → team → repo cascade with locked, override and append files | done |
-| Merges, wave rollouts, policy-as-code, audit ledger, Git bridge | next |
+| Audit ledger: hash-chained record of every write, archived under S3 Object Lock, `strata audit --verify`; events published from the ledger (never lost) | done |
+| Merges, wave rollouts, policy-as-code, Git bridge | next |
 
 ## Layout
 

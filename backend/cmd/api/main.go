@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/aws-abaschen/strata/backend/internal/api"
@@ -28,7 +27,6 @@ func main() {
 	a := &api.API{
 		Objects: &store.S3{Client: s3c, Presign: s3.NewPresignClient(s3c), Bucket: os.Getenv("BUCKET_NAME")},
 		Meta:    &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME")},
-		Events:  &store.EventBridge{Client: eventbridge.NewFromConfig(cfg), Bus: os.Getenv("EVENT_BUS")},
 		WebURL:  os.Getenv("WEB_URL"),
 		Log:     slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 	}

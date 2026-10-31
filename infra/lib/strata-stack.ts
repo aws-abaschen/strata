@@ -16,6 +16,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment'
 import * as secrets from 'aws-cdk-lib/aws-secretsmanager'
 import * as sqs from 'aws-cdk-lib/aws-sqs'
+import { DynamoEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources'
 import type { Construct } from 'constructs'
 
 const root = path.join(import.meta.dirname, '../..')
@@ -25,6 +26,14 @@ export interface StrataStackProps extends StackProps {
   authDomainPrefix?: string
   /** Secrets Manager ARN holding {"baseUrl","email","apiToken"} for Jira. Optional. */
   jiraSecretArn?: string
+  /** Days each audit record is locked in the archive bucket. Default 365. */
+  auditRetentionDays?: number
+  /**
+   * Object Lock mode for the audit archive. 'governance' (default) can be
+   * lifted by a privileged admin; 'compliance' cannot be lifted by anyone,
+   * including the root user, until retention ends: use it in production only.
+   */
+  auditLockMode?: 'governance' | 'compliance'
 }
 
 /**
@@ -54,6 +63,8 @@ export class StrataStack extends Stack {
       sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
       billing: dynamodb.Billing.onDemand(),
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      // The audit records stream to the ledger Lambda (archive + events).
+      dynamoStream: dynamodb.StreamViewType.NEW_IMAGE,
       deletionProtection: true,
       removalPolicy: RemovalPolicy.RETAIN,
       globalSecondaryIndexes: [
@@ -155,14 +166,12 @@ export class StrataStack extends Stack {
       environment: {
         BUCKET_NAME: data.bucketName,
         TABLE_NAME: table.tableName,
-        EVENT_BUS: bus.eventBusName,
         WEB_URL: webUrl,
       },
     })
     // PutObject is needed to sign upload URLs; clients then upload directly.
     data.grantReadWrite(apiFn)
     table.grantReadWriteData(apiFn)
-    bus.grantPutEventsTo(apiFn)
 
     const api = new apigw.HttpApi(this, 'Http', {
       corsPreflight: {
@@ -188,6 +197,43 @@ export class StrataStack extends Stack {
     const jiraSecret = props.jiraSecretArn
       ? secrets.Secret.fromSecretCompleteArn(this, 'JiraSecret', props.jiraSecretArn)
       : undefined
+    // --- Audit ledger: every write's hash-chained record, archived under
+    // Object Lock and published as an event (the ledger is the outbox). ---
+    const retention = Duration.days(props.auditRetentionDays ?? 365)
+    const auditBucket = new s3.Bucket(this, 'Audit', {
+      objectLockEnabled: true,
+      objectLockDefaultRetention:
+        props.auditLockMode === 'compliance'
+          ? s3.ObjectLockRetention.compliance(retention)
+          : s3.ObjectLockRetention.governance(retention),
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    })
+    const ledgerFn = goLambda('Ledger', 'ledger', {
+      environment: { AUDIT_BUCKET: auditBucket.bucketName, EVENT_BUS: bus.eventBusName },
+    })
+    auditBucket.grantPut(ledgerFn)
+    bus.grantPutEventsTo(ledgerFn)
+    const ledgerDlq = new sqs.Queue(this, 'LedgerDeadLetters', { retentionPeriod: Duration.days(14), enforceSSL: true })
+    ledgerFn.addEventSource(
+      new DynamoEventSource(table, {
+        startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+        batchSize: 100,
+        bisectBatchOnError: true,
+        retryAttempts: 20,
+        onFailure: new SqsDlq(ledgerDlq),
+        filters: [
+          lambda.FilterCriteria.filter({
+            eventName: lambda.FilterRule.isEqual('INSERT'),
+            dynamodb: { NewImage: { PK: { S: lambda.FilterRule.beginsWith('AUDIT#') } } },
+          }),
+        ],
+      }),
+    )
+
     const trackerFn = goLambda('Tracker', 'tracker', {
       environment: jiraSecret ? { JIRA_SECRET_ARN: jiraSecret.secretArn } : {},
     })
@@ -233,6 +279,7 @@ export class StrataStack extends Stack {
       IndexTable: table.tableName,
       EventBus: bus.eventBusName,
       TrackerDlq: dlq.queueName,
+      AuditBucket: auditBucket.bucketName,
     }
     for (const [k, v] of Object.entries(out)) new CfnOutput(this, k, { value: v })
   }

@@ -35,7 +35,6 @@ type API struct {
 	Objects store.Objects
 	layers  *layers.Resolver
 	Meta    store.Meta
-	Events  store.Events
 	// WebURL is the web console, used for links in events (Jira, Slack...).
 	WebURL string
 	Now    func() time.Time
@@ -72,9 +71,6 @@ func (a *API) log() *slog.Logger {
 
 // Handler returns the routed API.
 func (a *API) Handler() http.Handler {
-	if a.Events == nil {
-		a.Events = store.NoEvents{}
-	}
 	a.layers = &layers.Resolver{Meta: a.Meta, Objects: a.Objects}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /me", a.me)
@@ -95,6 +91,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("PUT /repos/{repo}/settings", a.updateSettings)
 	mux.HandleFunc("GET /repos/{repo}/layers", a.effectiveLayers)
 	mux.HandleFunc("GET /repos/{repo}/subscribers", a.subscribers)
+	mux.HandleFunc("GET /repos/{repo}/audit", a.auditLog)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if identity(r) == "" {
 			writeJSON(w, http.StatusUnauthorized, errBody{"unauthenticated"})
@@ -172,12 +169,12 @@ func hashParam(r *http.Request, name string) (core.Hash, error) {
 	return h, nil
 }
 
-func (a *API) publish(ctx context.Context, detailType string, detail any) {
-	// Best effort for now. Next step: DynamoDB Streams -> EventBridge Pipes,
-	// so events are delivered even if this call fails.
-	if err := a.Events.Publish(ctx, detailType, detail); err != nil {
-		a.log().ErrorContext(ctx, "publish event", "type", detailType, "err", err)
-	}
+// audit builds the ledger entry a write stores with itself. The ledger is
+// also the event outbox: the ledger Lambda publishes each record's detail
+// to EventBridge with the action as detail-type, so integrations get every
+// write exactly when it commits.
+func (a *API) audit(r *http.Request, action string, detail any) (core.AuditEntry, error) {
+	return core.NewAuditEntry(action, identity(r), a.now(), detail)
 }
 
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
@@ -221,11 +218,15 @@ func (a *API) createRepo(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	if err := a.Meta.CreateRepo(r.Context(), rp); err != nil {
+	entry, err := a.audit(r, "RepoCreated", map[string]any{"repo": rp.Name, "settings": rp})
+	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	a.publish(r.Context(), "RepoCreated", rp)
+	if err := a.Meta.CreateRepo(r.Context(), rp, entry); err != nil {
+		a.fail(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, rp)
 }
 
@@ -279,11 +280,15 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ref := core.Ref{Name: name, Target: in.Target, UpdatedBy: identity(r), UpdatedAt: a.now().UTC()}
-	if err := a.Meta.UpdateRef(r.Context(), rp.Name, ref, in.Expected); err != nil {
+	entry, err := a.audit(r, "RefUpdated", map[string]any{"repo": rp.Name, "ref": ref, "previous": in.Expected})
+	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	a.publish(r.Context(), "RefUpdated", map[string]any{"repo": rp.Name, "ref": ref, "previous": in.Expected})
+	if err := a.Meta.UpdateRef(r.Context(), rp.Name, ref, in.Expected, entry); err != nil {
+		a.fail(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, ref)
 }
 
@@ -495,7 +500,9 @@ func (a *API) checkClosure(ctx context.Context, repo string, root core.Hash) err
 // ChangeEvent is the detail of ChangeCreated and ChangeAnnotated events.
 type ChangeEvent struct {
 	core.ChangeSummary
-	Ref      string        `json:"ref,omitempty"`
+	Ref string `json:"ref,omitempty"`
+	// Previous is the revision the ref pointed at before ("" = created).
+	Previous core.Hash     `json:"previous,omitempty"`
 	Metadata core.Metadata `json:"metadata"`
 	Note     string        `json:"note,omitempty"`
 	URL      string        `json:"url,omitempty"`
@@ -608,18 +615,22 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	if err := a.Meta.PutChange(ctx, c, ref); err != nil {
+	ev := ChangeEvent{ChangeSummary: c.Summary(), Metadata: c.Metadata, URL: a.changeURL(c.Repo, c.Revision)}
+	if ref != nil {
+		ev.Ref, ev.Previous = ref.Name, ref.Expected
+	}
+	entry, err := a.audit(r, "ChangeCreated", ev)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if err := a.Meta.PutChange(ctx, c, ref, entry); err != nil {
 		if errors.Is(err, store.ErrConflict) && ref != nil {
 			err = fmt.Errorf("%w: ref %q or change %s moved since you read it; pull and retry", store.ErrConflict, ref.Name, c.ChangeID)
 		}
 		a.fail(w, r, err)
 		return
 	}
-	ev := ChangeEvent{ChangeSummary: c.Summary(), Metadata: c.Metadata, URL: a.changeURL(c.Repo, c.Revision)}
-	if ref != nil {
-		ev.Ref = ref.Name
-	}
-	a.publish(ctx, "ChangeCreated", ev)
 	writeJSON(w, http.StatusCreated, c)
 }
 
@@ -691,14 +702,21 @@ func (a *API) annotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := core.Annotation{Repo: rp.Name, Revision: rev, Author: identity(r), CreatedAt: a.now().UTC(), Note: in.Note, Metadata: in.Metadata}
-	if err := a.Meta.PutAnnotation(r.Context(), n); err != nil {
+	c, err := a.Meta.GetChange(r.Context(), rp.Name, rev)
+	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	if c, err := a.Meta.GetChange(r.Context(), rp.Name, rev); err == nil {
-		s := c.Summary()
-		s.Via = "annotation"
-		a.publish(r.Context(), "ChangeAnnotated", ChangeEvent{ChangeSummary: s, Metadata: n.Metadata, Note: n.Note, URL: a.changeURL(rp.Name, rev)})
+	s := c.Summary()
+	s.Via = "annotation"
+	entry, err := a.audit(r, "ChangeAnnotated", ChangeEvent{ChangeSummary: s, Metadata: n.Metadata, Note: n.Note, URL: a.changeURL(rp.Name, rev)})
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if err := a.Meta.PutAnnotation(r.Context(), n, entry); err != nil {
+		a.fail(w, r, err)
+		return
 	}
 	writeJSON(w, http.StatusCreated, n)
 }

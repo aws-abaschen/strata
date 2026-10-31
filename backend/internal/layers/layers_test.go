@@ -53,7 +53,7 @@ func commit(t *testing.T, mem *store.Memory, repo string, files map[string]strin
 	if _, err := c.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	if err := mem.PutChange(ctx, c, &store.RefUpdate{Name: "main", Expected: expected}); err != nil {
+	if err := mem.PutChange(ctx, c, &store.RefUpdate{Name: "main", Expected: expected}, core.AuditEntry{Action: "ChangeCreated"}); err != nil {
 		t.Fatal(err)
 	}
 	return c.Revision
@@ -66,7 +66,7 @@ func repo(t *testing.T, mem *store.Memory, name string, kind core.RepoKind, exte
 		l, _ := core.ParseLayerRef(extends)
 		r.Extends = &l
 	}
-	if err := mem.CreateRepo(context.Background(), r); err != nil {
+	if err := mem.CreateRepo(context.Background(), r, core.AuditEntry{Action: "RepoCreated"}); err != nil {
 		t.Fatal(err)
 	}
 	return r

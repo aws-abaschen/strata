@@ -3,9 +3,10 @@ import { Link, useParams, useSearchParams } from 'react-router'
 import { useApi, useAuth } from '../auth'
 import { Chips, CopyButton, Empty, ErrorBox, Loading, Rev } from '../components'
 import { subject, when } from '../format'
+import { AuditPanel } from './Audit'
 import { FleetPanel, LayersPanel } from './Layers'
 
-type Tab = 'history' | 'layers' | 'fleet'
+type Tab = 'history' | 'layers' | 'fleet' | 'audit'
 
 export function RepoPage() {
   const { repo = '' } = useParams()
@@ -20,6 +21,7 @@ export function RepoPage() {
     ['history', 'History'],
     ['layers', 'Layers'],
     ...(isLayer ? ([['fleet', 'Fleet']] as [Tab, string][]) : []),
+    ['audit', 'Audit'],
   ]
   const go = (t: Tab) => setParams((p) => (p.set('tab', t), p))
 
@@ -62,6 +64,7 @@ export function RepoPage() {
       {tab === 'history' && <History repo={repo} ref_={ref} refsReady={refs.isSuccess} hasRefs={!!refs.data?.length} />}
       {tab === 'layers' && info.data && <LayersPanel repo={info.data} ref={ref} />}
       {tab === 'fleet' && isLayer && <FleetPanel layer={repo} />}
+      {tab === 'audit' && <AuditPanel repo={repo} />}
     </section>
   )
 }

@@ -9,15 +9,21 @@ repository costs only its storage.
           ▼
  API Gateway (HTTP API) ──► Lambda "api" (Go)
           │                      │
-          │        ┌─────────────┼───────────────┐
-          ▼        ▼             ▼               ▼
-   presigned URLs  S3 "Data"     DynamoDB "Index"  EventBridge bus
-   (direct upload/ objects +     repos, refs,      ChangeCreated, ...
-    download)      sealed changes changes, index        │
-                                                  ┌─────┴──────┐
-                                                  ▼            ▼
-                                        Lambda "tracker"   your rules
-                                        (Jira links)       (SIEM, Slack...)
+          ▼                      ├──────────────► S3 "Data": objects, sealed changes
+   presigned URLs                │
+   (direct upload/download)      └──────────────► DynamoDB "Index": repos, refs, changes,
+                                                  work-item index, audit chain
+                                                         │ stream (audit records)
+                                                         ▼
+                                                  Lambda "ledger" ──► S3 "Audit" (Object Lock)
+                                                         │
+                                                         ▼
+                                                  EventBridge bus (ChangeCreated, ...)
+                                                         │
+                                          ┌──────────────┴──────────────┐
+                                          ▼                             ▼
+                                  Lambda "tracker"               your rules
+                                  (Jira links)                   (SIEM, Slack...)
 ```
 
 ## Data model
@@ -102,10 +108,34 @@ move `canary` first, then `main`.
    moves the change-ID pointer and the ref (both CAS), and adds index entries.
 3. A lost race returns `409`; nothing partial is visible.
 
+## Audit ledger and events
+
+Every write (repo created, settings changed, ref moved, change created, annotation)
+stores an audit record **in the same DynamoDB transaction** as the write, so there is
+never a write without its record, nor a record without its write.
+
+- Records form one hash chain per repository: `PK=AUDIT#<repo>`, `SK=<seq>`, each with
+  `prev` (the previous record's hash) and `hash` (SHA-256 of the canonical record).
+  `REPO#<repo>/AUDITHEAD` holds the last seq and hash, moved with compare-and-swap;
+  two concurrent writers retry until each gets its own seq.
+- Altering, deleting or reordering any record breaks every hash after it.
+  `strata audit --verify` checks the whole chain on the client, so the check does not
+  rely on the server; `GET /repos/{repo}/audit` returns pages with a server check too.
+- The table streams new audit records to the **ledger** Lambda, which writes each one
+  to the audit bucket (`audit/<repo>/<seq>.json`, write-once, default Object Lock
+  retention: governance mode, 365 days; `-c auditLockMode=compliance` for production)
+  and publishes it to EventBridge with the action as `detail-type`. The ledger is the
+  event outbox: events cannot be lost or sent for a write that did not commit.
+  Delivery is at least once (retries, bisect on error, DLQ after 20 attempts).
+
+Event `detail` = the write's payload (for `ChangeCreated`: repo, revision, change id,
+subject, author, ref, previous target, metadata, link) plus
+`audit: {repo, seq, hash, actor, at}`.
+
 ## Known gaps and next steps
 
-- **Events**: published after the write, best effort. Next: DynamoDB Streams →
-  EventBridge Pipes for guaranteed delivery and the hash-chained audit ledger.
+- **Audit of reads**: only writes are in the ledger. Reads can be logged with API
+  Gateway access logs and S3 data events in CloudTrail.
 - **Closure check** walks the whole tree on every push. Next: skip subtrees already
   verified in the parent change.
 - **Large files**: whole-file objects up to 5 GB. Next: content-defined chunking and

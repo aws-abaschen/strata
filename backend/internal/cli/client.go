@@ -286,3 +286,28 @@ func (c *Client) FindLabel(ctx context.Context, label string) ([]core.ChangeSumm
 	err := c.do(ctx, http.MethodGet, "/labels/"+label, nil, &out)
 	return out.Changes, err
 }
+
+// AuditPage is one page of a repository's ledger.
+type AuditPage struct {
+	Records  []core.AuditRecord `json:"records"`
+	Verified bool               `json:"verified"`
+	Error    string             `json:"error"`
+	Next     *int64             `json:"next"`
+}
+
+// Audit returns every ledger record of a repository, in order.
+func (c *Client) Audit(ctx context.Context, repo string) ([]core.AuditRecord, error) {
+	var all []core.AuditRecord
+	var after int64
+	for {
+		var p AuditPage
+		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/audit?after=%d", esc(repo), after), nil, &p); err != nil {
+			return nil, err
+		}
+		all = append(all, p.Records...)
+		if p.Next == nil {
+			return all, nil
+		}
+		after = *p.Next
+	}
+}
