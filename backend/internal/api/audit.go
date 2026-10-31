@@ -54,22 +54,31 @@ func (a *API) auditLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// maxAnchorPage bounds a page: each proof carries a timestamp token of a few KB.
+const maxAnchorPage = 100
+
 // auditAnchors returns the signed anchors that cover a repository's ledger:
-// GET /repos/{repo}/audit/anchors. Each proof shows only this chain's head
-// and sibling hashes, never other repositories' names.
+// GET /repos/{repo}/audit/anchors?after=0. Each proof shows only this
+// chain's head and sibling hashes, never other repositories' names.
 func (a *API) auditAnchors(w http.ResponseWriter, r *http.Request) {
 	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	ps, err := a.Meta.ListAnchorProofs(r.Context(), rp.Name)
+	a.anchorPage(w, r, rp.Name)
+}
+
+func (a *API) anchorPage(w http.ResponseWriter, r *http.Request, chain string) {
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	ps, err := a.Meta.ListAnchorProofs(r.Context(), chain, max(after, 0), maxAnchorPage)
 	if err != nil {
 		a.fail(w, r, err)
 		return
 	}
-	if ps == nil {
-		ps = []core.AnchorProof{}
+	out := map[string]any{"chain": chain, "anchors": ps}
+	if len(ps) == maxAnchorPage {
+		out["next"] = ps[len(ps)-1].Statement.Seq
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"repo": rp.Name, "anchors": ps})
+	writeJSON(w, http.StatusOK, out)
 }

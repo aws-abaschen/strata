@@ -68,4 +68,32 @@ func TestAuditVerifiesAnchors(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "verified 2 records") || !strings.Contains(out, "FAILED anchor verification") {
 		t.Fatalf("rewrite not caught (exit %d):\n%s", code, out)
 	}
+
+	// Deleting the proofs too does not hide it: this workspace remembers the
+	// anchors it verified.
+	h.mem.DropAnchorProofs("payments")
+	out, code = h.run(dir, "auditor@example.com", "audit", "--verify", "--anchor-key", keyFile)
+	if code == 0 || !strings.Contains(out, "anchor 1") || !strings.Contains(out, "evidence was removed") {
+		t.Fatalf("dropped proofs not caught (exit %d):\n%s", code, out)
+	}
+}
+
+// The break-glass chain is anchored too, and its auditors can check it.
+func TestBreakGlassLedgerIsAnchored(t *testing.T) {
+	h := newHarnessMode(t, false)
+	const root, sec = "root@example.com;strata-admins", "sec@example.com;strata-admins"
+	installPolicy(t, h, root, breakGlassPolicy)
+	h.ok(t.TempDir(), root, "breakglass", "start", "--reason", "anchoring test incident", "--work-item", "INC-9", "--repo", "app", "--for", "10m")
+	h.ok(t.TempDir(), root, "breakglass", "end")
+
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	job := &anchor.Job{Meta: h.mem, Archive: tableArchive{h.mem}, Signer: anchor.LocalSigner{Key: key, ID: "test"}}
+	if _, err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wit := filepath.Join(t.TempDir(), "w.json")
+	out := h.ok(t.TempDir(), sec, "breakglass", "audit", "--verify", "--witness", wit)
+	if !strings.Contains(out, "verified 2 break-glass records") || !strings.Contains(out, "anchored 1 times, through seq 2") || !strings.Contains(out, "1 anchors remembered") {
+		t.Fatalf("break-glass anchors:\n%s", out)
+	}
 }

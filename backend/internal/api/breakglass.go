@@ -300,3 +300,13 @@ func (a *API) grantLedger(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, recs)
 }
+
+// grantLedgerAnchors returns the anchors covering the break-glass ledger
+// (GET /break-glass/ledger/anchors), with the same visibility as the ledger.
+func (a *API) grantLedgerAnchors(w http.ResponseWriter, r *http.Request) {
+	if err := a.canSeeGrants(r); err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	a.anchorPage(w, r, core.BreakGlassChain)
+}

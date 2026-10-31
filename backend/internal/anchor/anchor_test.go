@@ -156,7 +156,7 @@ func (f *fixture) run() Report {
 
 func (f *fixture) verify(repo string) ([]Checked, error) {
 	recs, _ := f.mem.ListAudit(f.ctx, repo, 0, 1000)
-	ps, _ := f.mem.ListAnchorProofs(f.ctx, repo)
+	ps, _ := f.mem.ListAnchorProofs(f.ctx, repo, 0, 1000)
 	return VerifyChain(recs, ps, f.trust)
 }
 
@@ -215,9 +215,17 @@ func TestRewrittenTailIsCaught(t *testing.T) {
 		t.Fatalf("the rewrite should be internally consistent: %v", err)
 	}
 
-	// The job notices on its next run...
-	if rep := f.run(); len(rep.Rewrites) != 1 || rep.Rewrites[0].Seq != 4 {
-		t.Fatalf("rewrites: %+v", rep)
+	// The job notices on every run, and never signs over the rewrite, even
+	// once more writes land on the forged chain or a heartbeat is due.
+	f.write("payments")
+	for i := 0; i < 2; i++ {
+		f.now = f.now.Add(Heartbeat)
+		if rep := f.run(); len(rep.Rewrites) != 1 || rep.Rewrites[0].Seq != 4 || rep.Anchored != 0 {
+			t.Fatalf("run %d after rewrite: %+v", i, rep)
+		}
+	}
+	if a, _, _ := f.mem.LatestAnchor(f.ctx); a.Statement.Seq != 1 {
+		t.Fatalf("anchored over the rewrite: latest is %d", a.Statement.Seq)
 	}
 	// ...and any reader verifying against the anchors does too.
 	if _, err := f.verify("payments"); err == nil || !strings.Contains(err.Error(), "rewritten") {

@@ -161,7 +161,9 @@ every 15 minutes, one run at a time (reserved concurrency 1). Each run does thre
 1. **Rewrite check.** Every head (repo, seq, hash) the previous anchor committed to
    must still be in the table with the same hash. Chains link each record to the one
    before, so this covers every older record too. A difference is `AnchorRewrites`,
-   which raises an alarm.
+   which raises an alarm. The job then **stops anchoring** (an archive mismatch does the
+   same): it never signs over tampering, the last good anchor stays the baseline, and
+   every run reports the problem again until a person investigates.
 2. **Completeness reconciler.** For each chain, up to the previous anchor's head (at
    least one run old, so the ledger Lambda has archived it), compare every Object Lock
    archive record with the table record by hash. A missing record is
@@ -185,17 +187,24 @@ every 15 minutes, one run at a time (reserved concurrency 1). Each run does thre
    token and `AnchorTimestampFailures` raises an alarm. A missing successful run for an
    hour raises `AnchorStalledAlarm`.
 
-`strata audit --verify` then checks every anchor that ever covered the repository
-(`GET /repos/{repo}/audit/anchors`):
+`strata audit --verify` (and `strata breakglass audit --verify` for the `_breakglass`
+chain) then checks every anchor that ever covered the chain (`GET
+/repos/{repo}/audit/anchors`, `GET /break-glass/ledger/anchors`, paged):
 - the Merkle proof;
 - that the anchored record is the one the reader holds;
 - the signature, against a public key the reader pinned out of band (`--anchor-key` or
   `STRATA_ANCHOR_KEY`; get it with `aws kms get-public-key`, never from the API);
-- the timestamp token, chained to pinned roots (`--tsa-ca` or `STRATA_TSA_CA`).
+- the timestamp token, chained to pinned roots (`--tsa-ca` or `STRATA_TSA_CA`);
+- the **witness file**: every anchor this machine verified before is remembered in
+  `.strata/anchors.json` (or `--witness FILE`). The proofs live in the same table as
+  the ledger, so someone who can rewrite the ledger can also delete or replace the
+  proofs that cover it. A remembered anchor that is no longer served, or has changed,
+  fails verification.
 
-It says plainly what it could not check when nothing is pinned. Forging a new
-"latest" anchor does not help an attacker: the older anchors, already in readers' hands
-and in the Object Lock bucket, still commit to the original heads.
+It says plainly what it could not check when nothing is pinned or remembered. A reader
+with no history is protected only by the anchors as they are served now. The originals
+stay in the Object Lock bucket (`anchors/<seq>.json`), so an auditor can compare them,
+until anchors are copied to a separate account.
 
 **Limits of this prototype.**
 - The key, the table and the bucket are in one account, so its administrators can still

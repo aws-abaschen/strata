@@ -125,6 +125,10 @@ openssl pkey -pubin -inform DER -in anchor.der -out anchor.pem
 strata audit --verify --anchor-key anchor.pem --tsa-ca tsa-root.pem
 ```
 
+Each workspace remembers the anchors it verified (`.strata/anchors.json`), so proofs
+deleted or replaced on the server later fail verification. `strata breakglass audit
+--verify` does the same for the break-glass ledger.
+
 See [docs/architecture.md](docs/architecture.md#anchoring-making-the-chain-external-evidence).
 
 ### Jira

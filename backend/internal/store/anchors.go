@@ -26,8 +26,9 @@ type Anchors interface {
 	// PutAnchorProofs indexes proofs for anchor seq, then marks it indexed.
 	// Idempotent.
 	PutAnchorProofs(ctx context.Context, seq int64, proofs []core.AnchorProof) error
-	// ListAnchorProofs returns a chain's proofs, oldest first.
-	ListAnchorProofs(ctx context.Context, repo string) ([]core.AnchorProof, error)
+	// ListAnchorProofs returns a chain's proofs under anchors after the given
+	// anchor seq, oldest first, at most limit.
+	ListAnchorProofs(ctx context.Context, repo string, after int64, limit int) ([]core.AnchorProof, error)
 	// AnchorProgress is, per chain, the seq up to which the Object Lock
 	// archive was checked against the table.
 	AnchorProgress(ctx context.Context) (map[string]int64, error)
@@ -119,11 +120,12 @@ func (d *Dynamo) PutAnchorProofs(ctx context.Context, seq int64, proofs []core.A
 }
 
 // ListAnchorProofs implements Anchors.
-func (d *Dynamo) ListAnchorProofs(ctx context.Context, repo string) ([]core.AnchorProof, error) {
+func (d *Dynamo) ListAnchorProofs(ctx context.Context, repo string, after int64, limit int) ([]core.AnchorProof, error) {
 	items, err := d.query(ctx, &dynamodb.QueryInput{
-		KeyConditionExpression:    aws.String("PK = :p"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":p": s("ANCHORED#" + repo)},
-	}, 0)
+		KeyConditionExpression:    aws.String("PK = :p AND SK > :s"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":p": s("ANCHORED#" + repo), ":s": s(auditSK(after))},
+		Limit:                     aws.Int32(int32(limit)),
+	}, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -219,10 +221,24 @@ func (m *Memory) PutAnchorProofs(_ context.Context, seq int64, proofs []core.Anc
 }
 
 // ListAnchorProofs implements Anchors.
-func (m *Memory) ListAnchorProofs(_ context.Context, repo string) ([]core.AnchorProof, error) {
+func (m *Memory) ListAnchorProofs(_ context.Context, repo string, after int64, limit int) ([]core.AnchorProof, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]core.AnchorProof{}, m.anc().proofs[repo]...), nil
+	out := []core.AnchorProof{}
+	for _, p := range m.anc().proofs[repo] {
+		if p.Statement.Seq > after && len(out) < limit {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// DropAnchorProofs deletes a chain's proofs (tests only: what an operator
+// with table access could do to hide a rewrite from readers).
+func (m *Memory) DropAnchorProofs(repo string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.anc().proofs, repo)
 }
 
 // AnchorProgress implements Anchors.

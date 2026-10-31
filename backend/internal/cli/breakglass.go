@@ -99,10 +99,11 @@ func breakglassCmd(ctx context.Context, args []string, env Env) error {
 	outcome := fs.String("outcome", "", "accepted or rejected")
 	note := fs.String("note", "", "what you checked and found")
 	verify := fs.Bool("verify", false, "only verify the chain")
+	anchors := anchorFlags(fs, env)
 	if err := fs.Parse(reorder(args[1:])); err != nil {
 		return err
 	}
-	st, _, _ := LoadState(env.Dir)
+	st, root, _ := LoadState(env.Dir)
 	c, err := env.client(firstNonEmpty(*api, st.API))
 	if err != nil {
 		return err
@@ -186,7 +187,15 @@ func breakglassCmd(ctx context.Context, args []string, env Env) error {
 			return fmt.Errorf("%w: break-glass ledger FAILED verification: %v", core.ErrPolicy, verr)
 		}
 		fmt.Fprintf(env.Out, "verified %d break-glass records, head %s\n", len(recs), last.Short())
-		return nil
+		ac, err := anchors(workspaceWitness(root))
+		if err != nil {
+			return err
+		}
+		ps, err := c.BreakGlassAnchors(ctx)
+		if err != nil {
+			return err
+		}
+		return ac.verify("break-glass", c.API+" "+core.BreakGlassChain, recs, ps, env.Out)
 	}
 	return errors.New(breakglassUsage)
 }

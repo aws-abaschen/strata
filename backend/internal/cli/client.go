@@ -336,11 +336,31 @@ func (c *Client) Audit(ctx context.Context, repo string) ([]core.AuditRecord, er
 
 // Anchors returns the signed anchors covering a repository's ledger.
 func (c *Client) Anchors(ctx context.Context, repo string) ([]core.AnchorProof, error) {
-	var out struct {
-		Anchors []core.AnchorProof `json:"anchors"`
+	return c.anchorPages(ctx, fmt.Sprintf("/repos/%s/audit/anchors", esc(repo)))
+}
+
+// BreakGlassAnchors returns the signed anchors covering the break-glass ledger.
+func (c *Client) BreakGlassAnchors(ctx context.Context) ([]core.AnchorProof, error) {
+	return c.anchorPages(ctx, "/break-glass/ledger/anchors")
+}
+
+func (c *Client) anchorPages(ctx context.Context, path string) ([]core.AnchorProof, error) {
+	all := []core.AnchorProof{}
+	var after int64
+	for {
+		var p struct {
+			Anchors []core.AnchorProof `json:"anchors"`
+			Next    *int64             `json:"next"`
+		}
+		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("%s?after=%d", path, after), nil, &p); err != nil {
+			return nil, err
+		}
+		all = append(all, p.Anchors...)
+		if p.Next == nil {
+			return all, nil
+		}
+		after = *p.Next
 	}
-	err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/audit/anchors", esc(repo)), nil, &out)
-	return out.Anchors, err
 }
 
 // Me is the caller as the server sees it.

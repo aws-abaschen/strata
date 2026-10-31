@@ -128,6 +128,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /break-glass", a.activateGrant)
 	mux.HandleFunc("GET /break-glass", a.listGrants)
 	mux.HandleFunc("GET /break-glass/ledger", a.grantLedger)
+	mux.HandleFunc("GET /break-glass/ledger/anchors", a.grantLedgerAnchors)
 	mux.HandleFunc("GET /break-glass/{id}", a.getGrant)
 	mux.HandleFunc("POST /break-glass/{id}/end", a.endGrant)
 	mux.HandleFunc("POST /break-glass/{id}/review", a.reviewGrant)

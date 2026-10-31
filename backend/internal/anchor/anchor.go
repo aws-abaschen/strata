@@ -119,6 +119,12 @@ func (j *Job) Run(ctx context.Context) (Report, error) {
 		}
 	}
 
+	// Never sign over tampering: the previous anchor stays the baseline, so
+	// every run reports it again and the alarm stays raised until a person
+	// investigates. (Gaps only mean the ledger Lambda missed a record.)
+	if len(rep.Rewrites) > 0 || len(rep.Mismatches) > 0 {
+		return rep, nil
+	}
 	if havePrev && core.SameLeaves(prev.Heads, heads) && j.now().Sub(prev.Statement.CreatedAt) < Heartbeat {
 		return rep, nil
 	}
