@@ -135,12 +135,14 @@ func (d *Dynamo) UpdateRepo(ctx context.Context, r core.Repo, previous *core.Lay
 	if err != nil {
 		return err
 	}
-	// Item 0 checks the repo exists (transact maps its failure to ErrExists,
-	// turned into ErrNotFound below); item 1 is the CAS on the old Layer.
+	// DynamoDB allows one operation per item per transaction, so existence and
+	// the CAS on the old Layer are one condition on the single Put. A repo
+	// that is gone is reported before the transaction.
+	if _, err := d.get(ctx, repoPK(r.Name), "META"); err != nil {
+		return err
+	}
 	tx := []types.TransactWriteItem{
-		{ConditionCheck: &types.ConditionCheck{Key: map[string]types.AttributeValue{"PK": s(repoPK(r.Name)), "SK": s("META")},
-			ConditionExpression: aws.String("attribute_exists(PK)")}},
-		{Put: &types.Put{Item: it, ConditionExpression: aws.String("extends = :prev"),
+		{Put: &types.Put{Item: it, ConditionExpression: aws.String("attribute_exists(PK) AND extends = :prev"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{":prev": s(extendsKey(previous))}}},
 	}
 	if previous != nil && (r.Extends == nil || previous.Layer != r.Extends.Layer) {
@@ -154,8 +156,8 @@ func (d *Dynamo) UpdateRepo(ctx context.Context, r core.Repo, previous *core.Lay
 		tx = append(tx, types.TransactWriteItem{Put: &types.Put{Item: sub}})
 	}
 	err = d.transact(ctx, r.Name, audit, tx)
-	if errors.Is(err, ErrExists) { // item 0 failed: the repo is gone
-		return ErrNotFound
+	if errors.Is(err, ErrExists) { // item 0 failed: the Layer changed since it was read
+		return ErrConflict
 	}
 	return err
 }
