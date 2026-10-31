@@ -9,6 +9,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as cognito from 'aws-cdk-lib/aws-cognito'
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb'
 import * as events from 'aws-cdk-lib/aws-events'
+import * as iam from 'aws-cdk-lib/aws-iam'
 import * as kms from 'aws-cdk-lib/aws-kms'
 import * as targets from 'aws-cdk-lib/aws-events-targets'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
@@ -287,6 +288,18 @@ export class StrataStack extends Stack {
     // ledger must never silently stop, and nobody may tamper with it. ---
     const alarmTopic = new sns.Topic(this, 'Alarms', { enforceSSL: true })
     if (props.alarmEmail) alarmTopic.addSubscription(new subs.EmailSubscription(props.alarmEmail))
+    // Once the topic has a resource policy (EventBridge targets add one),
+    // CloudWatch alarms must be allowed explicitly or every alarm fails to publish.
+    alarmTopic.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'CloudWatchAlarms',
+      principals: [new iam.ServicePrincipal('cloudwatch.amazonaws.com')],
+      actions: ['sns:Publish'],
+      resources: [alarmTopic.topicArn],
+      conditions: {
+        StringEquals: { 'aws:SourceAccount': this.account },
+        ArnLike: { 'aws:SourceArn': `arn:${this.partition}:cloudwatch:${this.region}:${this.account}:alarm:*` },
+      },
+    }))
     const alarm = (id: string, metric: cloudwatch.IMetric, threshold: number, description: string) => {
       const a = new cloudwatch.Alarm(this, id, {
         metric,
