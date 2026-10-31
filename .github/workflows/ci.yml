@@ -36,6 +36,7 @@ jobs:
             GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -trimpath -ldflags="-s -w" -o dist/$c/bootstrap ./cmd/$c
           done
           go build -trimpath -o dist/strata ./cmd/strata
+          go build -trimpath -o dist/strata-dr ./cmd/strata-dr
           cd .. && pnpm --filter @strata/web build
       - name: Go
         working-directory: backend

@@ -36,6 +36,15 @@ type Memory struct {
 	index         map[string][]core.ChangeSummary
 	audits        map[string][]core.AuditRecord
 	anchors       *memAnchors
+	// heads overrides a chain's head, to simulate a partly replicated
+	// transaction (see SimulateLostRecords, SimulateHeadBehind).
+	heads map[string]memHead
+
+	// Region and Primary turn on the writer fence, as in Dynamo.
+	Region, Primary string
+	writer          *Writer
+	// Orphans holds records QuarantineAudit moved off their chain.
+	Orphans []core.AuditRecord
 
 	// OnAudit, if set, sees each audit record as it is written, like the
 	// DynamoDB stream does in AWS. It must not call the store.
@@ -150,16 +159,33 @@ func (m *Memory) CreateRepo(_ context.Context, r core.Repo, audit core.AuditEntr
 }
 
 func (m *Memory) prepareAudit(repo string, e core.AuditEntry) (core.AuditRecord, error) {
-	var seq int64
-	var prev core.Hash
-	if a := m.audits[repo]; len(a) > 0 {
-		seq, prev = a[len(a)-1].Seq, a[len(a)-1].Hash
+	if err := m.checkFence(); err != nil {
+		return core.AuditRecord{}, err
+	}
+	seq, prev := m.head(repo)
+	for _, r := range m.audits[repo] {
+		if r.Seq == seq+1 {
+			// The record exists but the head never moved: DynamoDB's put
+			// fails on every retry, as here.
+			return core.AuditRecord{}, fmt.Errorf("%w: audit ledger busy, retry", ErrConflict)
+		}
 	}
 	return core.NextAuditRecord(repo, seq, prev, e)
 }
 
+func (m *Memory) head(repo string) (int64, core.Hash) {
+	if h, ok := m.heads[repo]; ok {
+		return h.seq, h.hash
+	}
+	if a := m.audits[repo]; len(a) > 0 {
+		return a[len(a)-1].Seq, a[len(a)-1].Hash
+	}
+	return 0, ""
+}
+
 func (m *Memory) commitAudit(r core.AuditRecord) {
 	m.audits[r.Repo] = append(m.audits[r.Repo], r)
+	delete(m.heads, r.Repo)
 	var tag struct {
 		BreakGlass string `json:"breakGlass"`
 	}

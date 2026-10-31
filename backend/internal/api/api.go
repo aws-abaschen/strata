@@ -152,7 +152,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func (a *API) fail(w http.ResponseWriter, r *http.Request, err error) {
+	var nw *store.NotWriterError
 	switch {
+	case errors.As(err, &nw):
+		// 421 Misdirected Request: this region only reads. The body names
+		// the writer so clients retry there instead of here.
+		writeJSON(w, http.StatusMisdirectedRequest, map[string]any{
+			"error": err.Error(), "writerRegion": nw.Writer.Region, "writerApi": nw.Writer.API, "epoch": nw.Writer.Epoch,
+		})
+	case errors.Is(err, store.ErrNotWriter):
+		writeJSON(w, http.StatusMisdirectedRequest, errBody{err.Error()})
 	case errors.Is(err, core.ErrInvalid):
 		writeJSON(w, http.StatusBadRequest, errBody{err.Error()})
 	case errors.Is(err, core.ErrPolicy):
@@ -445,6 +454,12 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 func (a *API) negotiate(w http.ResponseWriter, r *http.Request) {
 	rp, err := a.repoFor(r, authz.Write)
 	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	// Uploads go to this region's bucket: only the writer takes them, or a
+	// push would upload here and commit in the writer before replication.
+	if err := a.Meta.Writable(r.Context()); err != nil {
 		a.fail(w, r, err)
 		return
 	}

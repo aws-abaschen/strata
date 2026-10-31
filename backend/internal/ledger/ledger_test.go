@@ -78,3 +78,36 @@ func TestEventDetailKeepsTheWritePayload(t *testing.T) {
 		t.Fatalf("detail %s", d)
 	}
 }
+
+// With a standby, each region archives every record but publishes only the
+// ones it wrote; a changed audit record is reported as a fork.
+func TestStandbyPublishesOnlyItsOwnRecords(t *testing.T) {
+	e, _ := core.NewAuditEntry("ChangeCreated", "ana", time.Now(), map[string]any{"repo": "payments"})
+	r1, _ := core.NextAuditRecord("payments", 0, "", e)
+	r2, _ := core.NextAuditRecord("payments", r1.Seq, r1.Hash, e)
+	r3, _ := core.NextAuditRecord("payments", r2.Seq, r2.Hash, e)
+	withRegion := func(rec events.DynamoDBEventRecord, region string) events.DynamoDBEventRecord {
+		if region != "" {
+			rec.Change.NewImage["region"] = events.NewStringAttribute(region)
+		}
+		return rec
+	}
+	ev := events.DynamoDBEvent{Records: []events.DynamoDBEventRecord{
+		withRegion(streamRecord(t, "INSERT", "AUDIT#payments", r1), ""), // before the standby existed
+		withRegion(streamRecord(t, "INSERT", "AUDIT#payments", r2), "eu-west-1"),
+		withRegion(streamRecord(t, "INSERT", "AUDIT#payments", r3), "eu-central-1"),
+		streamRecord(t, "MODIFY", "AUDIT#payments", r2),
+	}}
+	var forks []Overwrite
+	arch, pub := &fakeArchive{}, &fakePub{}
+	l := &Ledger{Archive: arch, Publisher: pub, Region: "eu-central-1", Primary: "eu-west-1", OnOverwrite: func(o Overwrite) { forks = append(forks, o) }}
+	if err := l.Handle(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(arch.keys) != 3 || len(pub.recs) != 1 || pub.recs[0].Seq != 3 {
+		t.Fatalf("archived %v, published %d", arch.keys, len(pub.recs))
+	}
+	if len(forks) != 1 || forks[0].Event != "MODIFY" {
+		t.Fatalf("forks %+v", forks)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -59,9 +60,16 @@ func main() {
 		log.Fatal(err)
 	}
 	job := &anchor.Job{
-		Meta:    &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME")},
+		Meta:    &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME"), Region: os.Getenv("STRATA_REGION"), Primary: os.Getenv("PRIMARY_REGION")},
 		Archive: &ledger.S3Archive{Client: s3.NewFromConfig(cfg), Bucket: os.Getenv("AUDIT_BUCKET")},
-		Signer:  kmsSigner{client: kms.NewFromConfig(cfg), keyID: os.Getenv("ANCHOR_KEY_ARN")},
+		// The key may live in another region (a standby signs with the
+		// primary's key): call KMS in the key's region.
+		Signer: kmsSigner{client: kms.NewFromConfig(cfg, func(o *kms.Options) {
+			if r := arnRegion(os.Getenv("ANCHOR_KEY_ARN")); r != "" {
+				o.Region = r
+			}
+		}), keyID: os.Getenv("ANCHOR_KEY_ARN")},
+		Region: os.Getenv("STRATA_REGION"),
 	}
 	if u := os.Getenv("TSA_URL"); u != "" {
 		job.TSA = anchor.HTTPTSA{URL: u}
@@ -93,4 +101,13 @@ func main() {
 			"report": rep,
 		})
 	})
+}
+
+// arnRegion returns the region field of an ARN ("" if it has none).
+func arnRegion(arn string) string {
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) < 6 {
+		return ""
+	}
+	return parts[3]
 }

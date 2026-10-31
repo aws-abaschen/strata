@@ -51,6 +51,7 @@ type RefUpdate struct {
 // Meta is the index of repositories, refs and changes.
 type Meta interface {
 	Anchors
+	Fence
 
 	// Every write takes an AuditEntry, stored as the next record of the
 	// repository's hash-chained ledger in the same transaction.

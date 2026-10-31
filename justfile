@@ -18,7 +18,7 @@ install:
 # Build the Lambdas (arm64), the CLI and the web console
 build:
     cd backend && for c in api tracker ledger sweeper anchor; do GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -trimpath -ldflags="-s -w" -o dist/$c/bootstrap ./cmd/$c; done
-    cd backend && go build -trimpath -o dist/strata ./cmd/strata
+    cd backend && go build -trimpath -o dist/strata ./cmd/strata && go build -trimpath -o dist/strata-dr ./cmd/strata-dr
     pnpm --filter @strata/web build
 
 # Run all tests and checks
@@ -33,7 +33,7 @@ fmt:
 
 # Install the strata CLI into $GOPATH/bin
 cli:
-    cd backend && go install ./cmd/strata
+    cd backend && go install ./cmd/strata ./cmd/strata-dr
 
 # Synthesize the CDK app
 synth: build

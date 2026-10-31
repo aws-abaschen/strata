@@ -26,7 +26,7 @@ func main() {
 	s3c := s3.NewFromConfig(cfg, func(o *s3.Options) { o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired })
 	a := &api.API{
 		Objects:          &store.S3{Client: s3c, Presign: s3.NewPresignClient(s3c), Bucket: os.Getenv("BUCKET_NAME")},
-		Meta:             &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME")},
+		Meta:             &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME"), Region: os.Getenv("STRATA_REGION"), Primary: os.Getenv("PRIMARY_REGION")},
 		WebURL:           os.Getenv("WEB_URL"),
 		PolicyRepo:       os.Getenv("POLICY_REPO"),
 		RequireFreshAuth: true,

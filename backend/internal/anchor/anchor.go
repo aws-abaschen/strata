@@ -61,6 +61,10 @@ type Job struct {
 	Signer  Signer
 	TSA     TSA // optional
 	Now     func() time.Time
+	// Region is this region. Only the writer region signs anchors (two
+	// signers would fork the anchor chain); every region reconciles its own
+	// archive. Empty: one region, always sign.
+	Region string
 }
 
 // Problem is one integrity finding.
@@ -79,6 +83,9 @@ type Report struct {
 	Gaps            []Problem `json:"gaps,omitempty"`
 	Mismatches      []Problem `json:"mismatches,omitempty"`
 	TimestampFailed bool      `json:"timestampFailed,omitempty"`
+	// Standby is set when this region is not the writer: it checked but did
+	// not sign.
+	Standby bool `json:"standby,omitempty"`
 }
 
 func (j *Job) now() time.Time {
@@ -92,12 +99,19 @@ func (j *Job) now() time.Time {
 // failures to run at all.
 func (j *Job) Run(ctx context.Context) (Report, error) {
 	var rep Report
+	if j.Region != "" {
+		w, err := j.Meta.Writer(ctx)
+		if err != nil {
+			return rep, err
+		}
+		rep.Standby = w.Region != j.Region
+	}
 	prev, indexed, err := j.Meta.LatestAnchor(ctx)
 	havePrev := err == nil
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return rep, err
 	}
-	if havePrev && !indexed {
+	if havePrev && !indexed && !rep.Standby {
 		// The last run stored the anchor but not its proofs: finish that first.
 		if err := j.Meta.PutAnchorProofs(ctx, prev.Statement.Seq, proofs(prev, prev.Heads)); err != nil {
 			return rep, err
@@ -111,12 +125,15 @@ func (j *Job) Run(ctx context.Context) (Report, error) {
 	rep.Chains = len(heads)
 
 	if havePrev {
-		if rep.Rewrites, err = j.checkAnchored(ctx, prev.Heads); err != nil {
+		if rep.Rewrites, err = j.checkAnchored(ctx, prev.Heads, rep.Standby); err != nil {
 			return rep, err
 		}
 		if err := j.reconcile(ctx, prev.Heads, &rep); err != nil {
 			return rep, err
 		}
+	}
+	if rep.Standby {
+		return rep, nil
 	}
 
 	// Never sign over tampering: the previous anchor stays the baseline, so
@@ -178,7 +195,11 @@ func (j *Job) heads(ctx context.Context) ([]core.AnchorLeaf, error) {
 // checkAnchored confirms each anchored head is still in its chain, unchanged.
 // Chains link every record to the one before, so this covers every older
 // record too.
-func (j *Job) checkAnchored(ctx context.Context, anchored []core.AnchorLeaf) ([]Problem, error) {
+//
+// In a standby, replication is item by item: an anchor can arrive before the
+// records it covers, so a missing record is not yet a finding there. A
+// different hash is.
+func (j *Job) checkAnchored(ctx context.Context, anchored []core.AnchorLeaf, standby bool) ([]Problem, error) {
 	var out []Problem
 	for _, l := range anchored {
 		recs, err := j.Meta.ListAudit(ctx, l.Repo, l.Seq-1, 1)
@@ -186,6 +207,7 @@ func (j *Job) checkAnchored(ctx context.Context, anchored []core.AnchorLeaf) ([]
 			return nil, err
 		}
 		switch {
+		case (len(recs) == 0 || recs[0].Seq != l.Seq) && standby:
 		case len(recs) == 0 || recs[0].Seq != l.Seq:
 			out = append(out, Problem{l.Repo, l.Seq, "anchored record is gone from the table"})
 		case recs[0].Hash != l.Hash:

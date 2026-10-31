@@ -16,6 +16,8 @@ github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.8 h1:PWv+vG8aCLS8qd+HPdY
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.8/go.mod h1:xxPZEpflYHJA12366ZGyq66z9dHPCoeCIu99Jck+MPw=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.8 h1:WOp5De9iWdEHDPh2Kb0tBP3vGBm/dVAuRGh4a4tqduo=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.8/go.mod h1:z8W8YgfhbWl62XqcTtK+CxPrE+iHGRVUOtrrbIOp7ZY=
+github.com/aws/aws-sdk-go-v2/service/cloudformation v1.82.3 h1:Y/cSKk2hEqYMBgaxpplbgAGK1y7EPQWPqpqJN2hkzw0=
+github.com/aws/aws-sdk-go-v2/service/cloudformation v1.82.3/go.mod h1:BIlXZX5mTEoic6gAYi273M8qow9RpzQL8Zl6Fqj2yd8=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.72.3 h1:W2GBZXhuN8NshnX0y6emc1AHp++za3XmPAFEVJ5ZdD0=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.72.3/go.mod h1:8AVcr/vb8bgJu2xczpXR3NMmQGG2w32FnaDs/dy1Aq0=
 github.com/aws/aws-sdk-go-v2/service/eventbridge v1.55.7 h1:6na4jZONXYiAQpygNlOaAVLPwn70VDPCbbthrJEiXLw=

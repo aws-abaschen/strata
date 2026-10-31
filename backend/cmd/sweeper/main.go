@@ -26,7 +26,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	meta := &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME")}
+	meta := &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME"), Region: os.Getenv("STRATA_REGION"), Primary: os.Getenv("PRIMARY_REGION")}
 	lambda.Start(func(ctx context.Context) error {
 		gs, err := meta.ListGrants(ctx, 0)
 		if err != nil {

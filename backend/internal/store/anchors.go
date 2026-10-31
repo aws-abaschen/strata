@@ -134,7 +134,7 @@ func (d *Dynamo) ListAnchorProofs(ctx context.Context, repo string, after int64,
 
 // AnchorProgress implements Anchors.
 func (d *Dynamo) AnchorProgress(ctx context.Context) (map[string]int64, error) {
-	it, err := d.get(ctx, anchorPK, "PROGRESS")
+	it, err := d.get(ctx, anchorPK, d.progressKey())
 	if errors.Is(err, ErrNotFound) {
 		return map[string]int64{}, nil
 	}
@@ -144,9 +144,17 @@ func (d *Dynamo) AnchorProgress(ctx context.Context) (map[string]int64, error) {
 	return decode[map[string]int64](it)
 }
 
+// progressKey is per region: each region reconciles its own archive.
+func (d *Dynamo) progressKey() string {
+	if d.Region == "" || d.Region == d.primary() {
+		return "PROGRESS"
+	}
+	return "PROGRESS#" + d.Region
+}
+
 // SetAnchorProgress implements Anchors.
 func (d *Dynamo) SetAnchorProgress(ctx context.Context, p map[string]int64) error {
-	it, err := item(anchorPK, "PROGRESS", p, nil)
+	it, err := item(anchorPK, d.progressKey(), p, nil)
 	if err != nil {
 		return err
 	}
@@ -174,10 +182,8 @@ func (m *Memory) anc() *memAnchors {
 func (m *Memory) AuditHead(_ context.Context, repo string) (int64, core.Hash, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if a := m.audits[repo]; len(a) > 0 {
-		return a[len(a)-1].Seq, a[len(a)-1].Hash, nil
-	}
-	return 0, "", nil
+	seq, h := m.head(repo)
+	return seq, h, nil
 }
 
 // LatestAnchor implements Anchors.

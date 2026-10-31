@@ -32,6 +32,12 @@ import (
 type Dynamo struct {
 	Client *dynamodb.Client
 	Table  string
+	// Region turns on the writer fence (see Writer): every audited write
+	// checks this region is the writer. Empty: no fence (tests, one region).
+	Region string
+	// Primary is the region that may write before a writer item exists
+	// (default Region).
+	Primary string
 }
 
 func s(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
@@ -347,7 +353,13 @@ func (d *Dynamo) transact(ctx context.Context, repo string, audit core.AuditEntr
 		if err != nil {
 			return err
 		}
-		recItem, err := item("AUDIT#"+repo, auditSK(rec.Seq), rec, map[string]types.AttributeValue{"action": s(rec.Action)})
+		// region (not hashed) says where the record was written: each region's
+		// ledger archives every record but publishes only its own.
+		extra := map[string]types.AttributeValue{"action": s(rec.Action)}
+		if d.Region != "" {
+			extra["region"] = s(d.Region)
+		}
+		recItem, err := item("AUDIT#"+repo, auditSK(rec.Seq), rec, extra)
 		if err != nil {
 			return err
 		}
@@ -360,7 +372,13 @@ func (d *Dynamo) transact(ctx context.Context, repo string, audit core.AuditEntr
 			headPut = &types.Put{Item: head, ConditionExpression: aws.String("seq = :s"),
 				ExpressionAttributeValues: map[string]types.AttributeValue{":s": &types.AttributeValueMemberN{Value: strconv.FormatInt(seq, 10)}}}
 		}
-		all := append(slices.Clone(tx),
+		all := slices.Clone(tx)
+		fenceAt := -1
+		if f := d.fence(); f != nil {
+			fenceAt = len(all)
+			all = append(all, *f)
+		}
+		all = append(all,
 			types.TransactWriteItem{Put: &types.Put{Item: recItem, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 			types.TransactWriteItem{Put: headPut})
 		if audit.BreakGlass != "" {
@@ -385,6 +403,9 @@ func (d *Dynamo) transact(ctx context.Context, repo string, audit core.AuditEntr
 		var tce *types.TransactionCanceledException
 		if !errors.As(err, &tce) {
 			return err
+		}
+		if fenceAt >= 0 && fenceAt < len(tce.CancellationReasons) && aws.ToString(tce.CancellationReasons[fenceAt].Code) == "ConditionalCheckFailed" {
+			return d.notWriter(ctx)
 		}
 		for i, r := range tce.CancellationReasons {
 			if aws.ToString(r.Code) != "ConditionalCheckFailed" || i >= len(tx) {

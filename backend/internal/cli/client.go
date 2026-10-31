@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,8 @@ type Client struct {
 type APIError struct {
 	Status  int
 	Message string
+	// WriterAPI is set on 421: this region only reads; writes go there.
+	WriterAPI string
 }
 
 func (e *APIError) Error() string { return fmt.Sprintf("%d: %s", e.Status, e.Message) }
@@ -40,6 +43,18 @@ func (c *Client) http() *http.Client {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	err := c.do1(ctx, method, path, in, out)
+	var ae *APIError
+	// A standby region answers writes with 421 and the writer's API: follow
+	// it once, and keep using it (later calls of this command go there too).
+	if errors.As(err, &ae) && ae.Status == http.StatusMisdirectedRequest && ae.WriterAPI != "" && ae.WriterAPI != c.API {
+		c.API = ae.WriterAPI
+		return c.do1(ctx, method, path, in, out)
+	}
+	return err
+}
+
+func (c *Client) do1(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -65,8 +80,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	defer res.Body.Close()
 	if res.StatusCode/100 != 2 {
 		var e struct {
-			Error   string `json:"error"`
-			Message string `json:"message"`
+			Error     string `json:"error"`
+			Message   string `json:"message"`
+			WriterAPI string `json:"writerApi"`
 		}
 		b, _ := io.ReadAll(res.Body)
 		json.Unmarshal(b, &e)
@@ -74,7 +90,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		if msg == "" {
 			msg = strings.TrimSpace(string(b))
 		}
-		return &APIError{Status: res.StatusCode, Message: msg}
+		return &APIError{Status: res.StatusCode, Message: msg, WriterAPI: e.WriterAPI}
 	}
 	if out == nil {
 		return nil
