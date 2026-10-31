@@ -334,6 +334,15 @@ func (c *Client) Audit(ctx context.Context, repo string) ([]core.AuditRecord, er
 	}
 }
 
+// Anchors returns the signed anchors covering a repository's ledger.
+func (c *Client) Anchors(ctx context.Context, repo string) ([]core.AnchorProof, error) {
+	var out struct {
+		Anchors []core.AnchorProof `json:"anchors"`
+	}
+	err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/audit/anchors", esc(repo)), nil, &out)
+	return out.Anchors, err
+}
+
 // Me is the caller as the server sees it.
 type Me struct {
 	Identity      string   `json:"identity"`

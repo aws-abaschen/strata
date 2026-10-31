@@ -35,6 +35,7 @@ type Memory struct {
 	grantActivity map[string][]core.AuditRecord
 	index         map[string][]core.ChangeSummary
 	audits        map[string][]core.AuditRecord
+	anchors       *memAnchors
 
 	// OnAudit, if set, sees each audit record as it is written, like the
 	// DynamoDB stream does in AWS. It must not call the store.

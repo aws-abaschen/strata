@@ -23,6 +23,7 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Web console: repos, history, change detail, file browser, annotate, search | done |
 | Layers: org → business unit → team → repo cascade with locked, override and append files | done |
 | Audit ledger: hash-chained record of every write, archived under S3 Object Lock, `strata audit --verify`; events published from the ledger (never lost) | done |
+| Ledger anchoring: every 15 minutes a KMS-signed, RFC 3161-timestamped Merkle root of all chain heads, chained to the previous anchor; reconciler checks the Object Lock archive record by record; `strata audit --verify --anchor-key` catches a rewritten history | done |
 | Policy-as-code permissions: Cedar policies versioned in a Strata repo, groups from Cognito, Layer-aware (`resource in Repo::"payments-rules"`) | done |
 | Four-eyes approvals and protected refs: approvals bound to a revision, authors never count, ref-move facts in the Cedar context, approvers recorded in the ledger | done |
 | Break-glass: no standing admin access; time-boxed grants (ticket, scope, max 4h, fresh MFA), enforced outside Cedar so no policy can lock everyone out, every use tagged in the ledger, reviewed by another admin, alerted, overdue reviews alarmed | done |
@@ -46,7 +47,7 @@ partial; everything else is labelled roadmap. Update it when a feature lands.
 
 ## Develop
 
-Needs Go 1.26, Node 24, pnpm 10 (`corepack enable`), just, and the AWS CLI.
+Needs Go 1.27, Node 24, pnpm 10 (`corepack enable`), just, and the AWS CLI.
 
 ```sh
 just install
@@ -112,6 +113,19 @@ strata breakglass review bg-... --outcome accepted --note "diff matches INC-42"
 ```
 
 See [docs/architecture.md](docs/architecture.md#break-glass-time-boxed-and-reviewed).
+
+### Anchors
+
+`strata audit --verify` also checks the signed anchors that covered the repository.
+Pin the anchor public key yourself, never from the API:
+
+```sh
+aws kms get-public-key --key-id alias/strata-anchor --query PublicKey --output text | base64 -d > anchor.der
+openssl pkey -pubin -inform DER -in anchor.der -out anchor.pem
+strata audit --verify --anchor-key anchor.pem --tsa-ca tsa-root.pem
+```
+
+See [docs/architecture.md](docs/architecture.md#anchoring-making-the-chain-external-evidence).
 
 ### Jira
 

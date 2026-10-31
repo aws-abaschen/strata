@@ -355,10 +355,16 @@ func run(ctx context.Context, args []string, env Env) error {
 	case "audit":
 		n := fs.Int("n", 20, "records to print")
 		verify := fs.Bool("verify", false, "only verify, print nothing else")
+		key := fs.String("anchor-key", env.Getenv("STRATA_ANCHOR_KEY"), "PEM public key of the anchor signer, obtained out of band")
+		tsaCA := fs.String("tsa-ca", env.Getenv("STRATA_TSA_CA"), "PEM root certificate(s) of the timestamp authority")
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		return auditCmd(ctx, c, st.Repo, *n, *verify, env.Out)
+		trust, err := loadTrust(*key, *tsaCA)
+		if err != nil {
+			return err
+		}
+		return auditCmd(ctx, c, st.Repo, *n, *verify, trust, env.Out)
 	case "find":
 		wi := fs.String("work-item", "", "work item")
 		label := fs.String("label", "", "label")

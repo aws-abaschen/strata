@@ -10,6 +10,7 @@ new StrataStack(app, 'Strata', {
   authDomainPrefix: ctx('authDomainPrefix'),
   jiraSecretArn: ctx('jiraSecretArn'),
   alarmEmail: ctx('alarmEmail'),
+  tsaUrl: ctx('tsaUrl'),
 })
 
 // Public showcase site at strata.baschen.is. Cross-region references need a literal account.

@@ -14,6 +14,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	lambdasvc "github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/aws-abaschen/strata/backend/internal/api"
@@ -228,4 +231,30 @@ func TestDeployedStack(t *testing.T) {
 		t.Fatalf("break-glass ledger: %s", out)
 	}
 	t.Logf("ok: break-glass grant %s", gid)
+
+	// Anchoring: run the deployed job (real KMS key, real RFC 3161 authority),
+	// then verify the app's ledger against it with the public key pinned, as
+	// an auditor would after fetching it out of band.
+	fn := os.Getenv("STRATA_ANCHOR_FN")
+	if fn == "" {
+		t.Log("STRATA_ANCHOR_FN not set: skipping the anchor check")
+		return
+	}
+	lc := lambdasvc.NewFromConfig(cfg)
+	inv, err := lc.Invoke(ctx, &lambdasvc.InvokeInput{FunctionName: &fn})
+	if err != nil || inv.FunctionError != nil {
+		t.Fatalf("anchor Lambda: %v %s", err, inv.Payload)
+	}
+	keyArn := env(t, "STRATA_ANCHOR_KEY_ARN")
+	pk, err := kms.NewFromConfig(cfg).GetPublicKey(ctx, &kms.GetPublicKeyInput{KeyId: &keyArn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(t.TempDir(), "anchor.pem")
+	os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pk.PublicKey}), 0o644)
+	out = h.ok(a1, ana, "audit", "--verify", "--anchor-key", keyFile)
+	if !strings.Contains(out, "signatures: verified with the pinned anchor key") || !strings.Contains(out, "RFC 3161") {
+		t.Fatalf("anchor verification:\n%s", out)
+	}
+	t.Logf("ok: anchors\n%s", out)
 }

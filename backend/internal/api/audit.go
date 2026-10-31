@@ -53,3 +53,23 @@ func (a *API) auditLog(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+
+// auditAnchors returns the signed anchors that cover a repository's ledger:
+// GET /repos/{repo}/audit/anchors. Each proof shows only this chain's head
+// and sibling hashes, never other repositories' names.
+func (a *API) auditAnchors(w http.ResponseWriter, r *http.Request) {
+	rp, err := a.repoFor(r, authz.Read)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	ps, err := a.Meta.ListAnchorProofs(r.Context(), rp.Name)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if ps == nil {
+		ps = []core.AnchorProof{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"repo": rp.Name, "anchors": ps})
+}

@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	ebtypes "github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/aws-abaschen/strata/backend/internal/core"
+	"github.com/aws-abaschen/strata/backend/internal/store"
 )
 
 // S3Archive writes audit/<repo>/<seq>.json once. The bucket's default
@@ -77,4 +80,36 @@ func (p *EventBridgePublisher) Publish(ctx context.Context, recs []core.AuditRec
 		}
 	}
 	return nil
+}
+
+// Get reads an archived record (store.ErrNotFound if missing).
+func (a *S3Archive) Get(ctx context.Context, repo string, seq int64) (core.AuditRecord, error) {
+	var r core.AuditRecord
+	out, err := a.Client.GetObject(ctx, &s3.GetObjectInput{Bucket: &a.Bucket, Key: aws.String(Key(core.AuditRecord{Repo: repo, Seq: seq}))})
+	var nsk *s3types.NoSuchKey
+	if errors.As(err, &nsk) {
+		return r, store.ErrNotFound
+	}
+	if err != nil {
+		return r, err
+	}
+	defer out.Body.Close()
+	return r, json.NewDecoder(io.LimitReader(out.Body, 1<<20)).Decode(&r)
+}
+
+// PutAnchor writes anchors/<seq>.json once, under the bucket's Object Lock.
+func (a *S3Archive) PutAnchor(ctx context.Context, x core.Anchor) error {
+	b, err := json.Marshal(x)
+	if err != nil {
+		return err
+	}
+	_, err = a.Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &a.Bucket, Key: aws.String(fmt.Sprintf("anchors/%012d.json", x.Statement.Seq)), Body: bytes.NewReader(b),
+		ContentType: aws.String("application/json"), IfNoneMatch: aws.String("*"),
+	})
+	var re *smithyhttp.ResponseError
+	if errors.As(err, &re) && re.HTTPStatusCode() == http.StatusPreconditionFailed {
+		return nil
+	}
+	return err
 }

@@ -124,6 +124,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /repos/{repo}/layers", a.effectiveLayers)
 	mux.HandleFunc("GET /repos/{repo}/subscribers", a.subscribers)
 	mux.HandleFunc("GET /repos/{repo}/audit", a.auditLog)
+	mux.HandleFunc("GET /repos/{repo}/audit/anchors", a.auditAnchors)
 	mux.HandleFunc("POST /break-glass", a.activateGrant)
 	mux.HandleFunc("GET /break-glass", a.listGrants)
 	mux.HandleFunc("GET /break-glass/ledger", a.grantLedger)

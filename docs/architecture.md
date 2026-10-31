@@ -151,6 +151,61 @@ Event `detail` = the write's payload (for `ChangeCreated`: repo, revision, chang
 subject, author, ref, previous target, metadata, link) plus
 `audit: {repo, seq, hash, actor, at}`.
 
+### Anchoring: making the chain external evidence
+
+A hash chain alone proves nothing against whoever can write the table: they can
+rewrite a chain's tail and recompute every hash after it, and `--verify` still passes.
+The **anchor** Lambda (`cmd/anchor`, package `internal/anchor`) closes that gap. It runs
+every 15 minutes, one run at a time (reserved concurrency 1). Each run does three things.
+
+1. **Rewrite check.** Every head (repo, seq, hash) the previous anchor committed to
+   must still be in the table with the same hash. Chains link each record to the one
+   before, so this covers every older record too. A difference is `AnchorRewrites`,
+   which raises an alarm.
+2. **Completeness reconciler.** For each chain, up to the previous anchor's head (at
+   least one run old, so the ledger Lambda has archived it), compare every Object Lock
+   archive record with the table record by hash. A missing record is
+   `LedgerArchiveGaps` and a different one is `LedgerArchiveMismatches`; both raise
+   alarms. Progress is kept per chain and stops at the first problem, so the problem is
+   reported again every run until someone fixes it.
+3. **Anchor.** If any head moved, or 24 hours have passed (heartbeat), the run builds a
+   Merkle tree (RFC 9162 hashing, domain-separated leaves and nodes) over every chain's
+   head, `_breakglass` included. It then signs a statement `{v, seq, prev, root, leaves,
+   createdAt}`, where `prev` is the previous statement's digest:
+   - the signature is ECDSA P-256 by the KMS key `alias/strata-anchor`; the private key
+     never leaves KMS;
+   - the run asks an RFC 3161 timestamp authority (`TSA_URL`) for a token over the same
+     digest;
+   - the anchor goes to `ANCHOR/<seq>` with a compare-and-swap on `ANCHOR/LATEST`, so
+     anchors never fork, and to the audit bucket (`anchors/<seq>.json`, Object Lock);
+   - each chain whose head moved gets a proof (`ANCHORED#<repo>/<seq>`): its leaf, the
+     sibling hashes and the signed statement. No other repository's name is in it.
+
+   A timestamp authority outage does not stop anchoring: the anchor is stored without a
+   token and `AnchorTimestampFailures` raises an alarm. A missing successful run for an
+   hour raises `AnchorStalledAlarm`.
+
+`strata audit --verify` then checks every anchor that ever covered the repository
+(`GET /repos/{repo}/audit/anchors`):
+- the Merkle proof;
+- that the anchored record is the one the reader holds;
+- the signature, against a public key the reader pinned out of band (`--anchor-key` or
+  `STRATA_ANCHOR_KEY`; get it with `aws kms get-public-key`, never from the API);
+- the timestamp token, chained to pinned roots (`--tsa-ca` or `STRATA_TSA_CA`).
+
+It says plainly what it could not check when nothing is pinned. Forging a new
+"latest" anchor does not help an attacker: the older anchors, already in readers' hands
+and in the Object Lock bucket, still commit to the original heads.
+
+**Limits of this prototype.**
+- The key, the table and the bucket are in one account, so its administrators can still
+  sign and can lift a governance-mode lock. Production moves the anchor key and a copy of
+  the anchors to a separate security (log-archive) account, uses compliance mode, and
+  publishes the key fingerprint.
+- FreeTSA, the default, is not a qualified eIDAS authority; set `-c tsaUrl=` to a
+  qualified one in production.
+- One anchor item holds every head, which limits it to a few thousand repositories.
+
 ## Permissions (policy-as-code)
 
 Every request is authorized with [Cedar](https://www.cedarpolicy.com/), evaluated
@@ -271,7 +326,9 @@ strata breakglass review bg-... --outcome accepted --note "diff matches INC-42"
   ledger more than 5 minutes behind the table stream, ledger errors, any message in the
   ledger or tracker dead-letter queue, CloudTrail events that change or delete the
   ledger function or its stream mapping (an attempt to switch the evidence off), every
-  break-glass activation, end and review, and break-glass reviews overdue.
+  break-glass activation, end and review, break-glass reviews overdue, and the anchor
+  job: rewritten anchored records, archive gaps or mismatches, missing timestamps,
+  errors, a stalled job, and changes to its function.
 - **Verified against real AWS:** `go test -tags aws ./internal/integration/` runs the
   CLI and API against a deployed stack (presigned uploads, transactions, ledger archive
   under Object Lock). The in-memory store accepts transaction shapes DynamoDB rejects, so

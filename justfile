@@ -17,7 +17,7 @@ install:
 
 # Build the Lambdas (arm64), the CLI and the web console
 build:
-    cd backend && for c in api tracker ledger sweeper; do GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -trimpath -ldflags="-s -w" -o dist/$c/bootstrap ./cmd/$c; done
+    cd backend && for c in api tracker ledger sweeper anchor; do GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -trimpath -ldflags="-s -w" -o dist/$c/bootstrap ./cmd/$c; done
     cd backend && go build -trimpath -o dist/strata ./cmd/strata
     pnpm --filter @strata/web build
 

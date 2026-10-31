@@ -53,7 +53,7 @@ test('tracker gets change events with retries and a DLQ', () => {
 })
 
 test('lambdas are arm64 Go custom runtime', () => {
-  template.resourcePropertiesCountIs('AWS::Lambda::Function', { Runtime: 'provided.al2023', Architectures: ['arm64'] }, 4)
+  template.resourcePropertiesCountIs('AWS::Lambda::Function', { Runtime: 'provided.al2023', Architectures: ['arm64'] }, 5)
 })
 
 test('audit records stream to the ledger, archived under Object Lock', () => {
@@ -67,11 +67,24 @@ test('audit records stream to the ledger, archived under Object Lock', () => {
 })
 
 test('ledger failures and tampering raise alarms', () => {
-  template.resourceCountIs('AWS::CloudWatch::Alarm', 6)
+  template.resourceCountIs('AWS::CloudWatch::Alarm', 12)
   template.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'BreakGlassOverdueReviews', Namespace: 'Strata' })
   template.hasResourceProperties('AWS::Events::Rule', { EventPattern: { 'detail-type': ['BreakGlassActivated', 'BreakGlassEnded', 'BreakGlassReviewed'] } })
   template.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'IteratorAge', Threshold: 300000 })
   template.hasResourceProperties('AWS::Events::Rule', {
     EventPattern: Match.objectLike({ source: ['aws.lambda'], detail: Match.objectLike({ eventName: Match.arrayWith([{ prefix: 'UpdateEventSourceMapping' }]) }) }),
   })
+})
+
+test('ledger anchors are signed by a dedicated asymmetric key, by one writer', () => {
+  template.hasResourceProperties('AWS::KMS::Key', { KeySpec: 'ECC_NIST_P256', KeyUsage: 'SIGN_VERIFY' })
+  template.hasResource('AWS::KMS::Key', { DeletionPolicy: 'Retain', Properties: Match.objectLike({ KeySpec: 'ECC_NIST_P256' }) })
+  template.hasResourceProperties('AWS::Lambda::Function', {
+    ReservedConcurrentExecutions: 1,
+    Environment: { Variables: Match.objectLike({ TSA_URL: Match.anyValue(), ANCHOR_KEY_ARN: Match.anyValue() }) },
+  })
+  for (const metricName of ['AnchorRewrites', 'LedgerArchiveGaps', 'LedgerArchiveMismatches', 'AnchorTimestampFailures']) {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: metricName, Namespace: 'Strata' })
+  }
+  template.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'AnchorRuns', ComparisonOperator: 'LessThanThreshold', TreatMissingData: 'breaching' })
 })

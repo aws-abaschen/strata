@@ -43,6 +43,11 @@ export interface StrataStackProps extends StackProps {
   policyRepo?: string
   /** Email that receives ledger and tracker alarms (must confirm the subscription). */
   alarmEmail?: string
+  /**
+   * RFC 3161 timestamp authority for ledger anchors. Default FreeTSA, which is
+   * not a qualified (eIDAS) authority: set a qualified one in production.
+   */
+  tsaUrl?: string
 }
 
 /**
@@ -351,6 +356,62 @@ export class StrataStack extends Stack {
     )
     alarm('SweeperErrorsAlarm', sweeperFn.metricErrors({ period: hourly }), 0, 'The break-glass sweeper Lambda is failing, so overdue reviews go unnoticed.')
 
+    // --- Ledger anchoring (SOX §802, DORA Art. 12, SOC 2 CC7): every 15
+    // minutes, sign (KMS, the private key never leaves it) and timestamp
+    // (RFC 3161) a Merkle root of every chain head, check that earlier
+    // anchored heads are unchanged, and reconcile the Object Lock archive
+    // against the table. In this single-account prototype the operator can
+    // still use the key; production moves it to a separate security account.
+    const anchorKey = new kms.Key(this, 'AnchorKey', {
+      alias: 'alias/strata-anchor',
+      description: 'Signs audit ledger anchors (ECDSA P-256)',
+      keySpec: kms.KeySpec.ECC_NIST_P256,
+      keyUsage: kms.KeyUsage.SIGN_VERIFY,
+      removalPolicy: RemovalPolicy.RETAIN,
+    })
+    const anchorFn = goLambda('Anchor', 'anchor', {
+      environment: {
+        TABLE_NAME: table.tableName,
+        AUDIT_BUCKET: auditBucket.bucketName,
+        ANCHOR_KEY_ARN: anchorKey.keyArn,
+        TSA_URL: props.tsaUrl ?? 'https://freetsa.org/tsr',
+      },
+      timeout: Duration.minutes(5),
+      reservedConcurrentExecutions: 1, // one writer: anchors must never fork
+    })
+    table.grantReadWriteData(anchorFn)
+    auditBucket.grantRead(anchorFn)
+    auditBucket.grantPut(anchorFn)
+    anchorKey.grant(anchorFn, 'kms:Sign')
+    new events.Rule(this, 'AnchorSchedule', {
+      schedule: events.Schedule.rate(Duration.minutes(15)),
+      targets: [new targets.LambdaFunction(anchorFn, { retryAttempts: 0 })],
+    })
+    const quarter = Duration.minutes(15)
+    const strataMax = (metricName: string, period = quarter) =>
+      new cloudwatch.Metric({ namespace: 'Strata', metricName, statistic: 'Maximum', period })
+    alarm('AnchorRewriteAlarm', strataMax('AnchorRewrites'), 0, 'An anchored audit record changed or disappeared from the table: the ledger was rewritten after the fact. Treat as a security incident.')
+    alarm('LedgerArchiveGapAlarm', strataMax('LedgerArchiveGaps'), 0, 'Audit records are missing from the Object Lock archive. See the anchor Lambda log for the repository and seq.')
+    alarm('LedgerArchiveMismatchAlarm', strataMax('LedgerArchiveMismatches'), 0, 'An Object Lock archive record differs from the table: one of them was altered.')
+    alarm('AnchorTimestampAlarm', strataMax('AnchorTimestampFailures', hourly), 0, 'Anchors are being written without an RFC 3161 timestamp (timestamp authority unreachable).')
+    alarm('AnchorErrorsAlarm', anchorFn.metricErrors({ period: quarter }), 0, 'The ledger anchor Lambda is failing.')
+    new cloudwatch.Alarm(this, 'AnchorStalledAlarm', {
+      metric: new cloudwatch.Metric({ namespace: 'Strata', metricName: 'AnchorRuns', statistic: 'Sum', period: hourly }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      alarmDescription: 'No successful ledger anchor run in the last hour.',
+    }).addAlarmAction(new cwActions.SnsAction(alarmTopic))
+    new events.Rule(this, 'AnchorCodeChanged', {
+      eventPattern: {
+        ...trail,
+        detail: { eventName: [{ prefix: 'UpdateFunctionCode' }, { prefix: 'UpdateFunctionConfiguration' }, { prefix: 'DeleteFunction' }], requestParameters: { functionName: [anchorFn.functionName] } },
+      },
+      targets: [new targets.SnsTopic(alarmTopic)],
+      description: 'Ledger anchor configuration changed',
+    })
+
     // --- Web console files and its runtime config. ---
     const webDist = path.join(root, 'web/dist')
     const config = {
@@ -384,6 +445,7 @@ export class StrataStack extends Stack {
       TrackerDlq: dlq.queueName,
       AuditBucket: auditBucket.bucketName,
       AlarmTopic: alarmTopic.topicArn,
+      AnchorKeyArn: anchorKey.keyArn,
     }
     for (const [k, v] of Object.entries(out)) new CfnOutput(this, k, { value: v })
   }
