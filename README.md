@@ -24,7 +24,8 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Layers: org → business unit → team → repo cascade with locked, override and append files | done |
 | Audit ledger: hash-chained record of every write, archived under S3 Object Lock, `strata audit --verify`; events published from the ledger (never lost) | done |
 | Policy-as-code permissions: Cedar policies versioned in a Strata repo, groups from Cognito, Layer-aware (`resource in Repo::"payments-rules"`) | done |
-| Merges, wave rollouts, Git bridge | next |
+| `strata pull`: three-way merge of your edits with the server's latest (line-level for text, conflict markers, push blocked until resolved) | done |
+| Branch merges in the web console, wave rollouts, Git bridge | next |
 
 ## Layout
 
@@ -65,6 +66,7 @@ strata repo create payments -d "Payments service"
 strata init --repo payments
 strata push -m "PAY-42 round half-even" --label risk:low --attr approver=ana
 strata annotate --work-item SEC-9 --note "covered by SEC-9 review"
+strata pull                                       # someone pushed first? merge their work into yours
 strata find --work-item PAY-42
 ```
 

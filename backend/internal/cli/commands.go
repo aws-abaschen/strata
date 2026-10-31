@@ -23,6 +23,7 @@ Usage:
   strata clone REPO [DIR] [--ref main]          download a repository
   strata status                                 show whether files changed since HEAD
   strata push -m MESSAGE [metadata] [--amend]   snapshot and record a change
+  strata pull                                   merge the server's latest into your edits
   strata log [-n 20]                            history of the current ref
   strata show [REV]                             one change with its annotations
   strata annotate [REV] [--note TEXT] [metadata]
@@ -178,7 +179,34 @@ func run(ctx context.Context, args []string, env Env) error {
 		return err
 	}
 	switch cmd {
+	case "pull":
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		res, err := Pull(ctx, c, &st, root)
+		if err != nil {
+			return err
+		}
+		if res.To == res.From {
+			fmt.Fprintf(env.Out, "already up to date with %s\n", st.Ref)
+		} else {
+			fmt.Fprintf(env.Out, "pulled %s: %s -> %s, %d updated, %d merged, %d conflicts\n",
+				st.Ref, res.From.Short(), res.To.Short(), res.Updated, res.Merged, len(res.Conflicts))
+		}
+		for _, p := range res.Kept {
+			fmt.Fprintf(env.Out, "  kept %s: you changed it, the server deleted it\n", p)
+		}
+		for _, p := range res.Conflicts {
+			fmt.Fprintf(env.Out, "  CONFLICT %s: resolve it, then push\n", p)
+		}
+		if ls, err := LoadLayerState(root); err == nil && len(ls.Files) > 0 {
+			return PullLayers(ctx, c, st, root, env.Out)
+		}
+		return nil
 	case "status":
+		if left, err := unresolved(root); err == nil && len(left) > 0 {
+			fmt.Fprintf(env.Out, "unresolved conflicts: %v\n", left)
+		}
 		snap, err := TakeSnapshot(root)
 		if err != nil {
 			return err
@@ -437,6 +465,11 @@ func push(ctx context.Context, c *Client, st *State, root, msg string, md core.M
 	if strings.TrimSpace(msg) == "" {
 		return errors.New("a message is required: -m \"PAY-42 what changed\"")
 	}
+	if left, err := unresolved(root); err != nil {
+		return err
+	} else if len(left) > 0 {
+		return fmt.Errorf("unresolved conflicts in %v: edit them (remove the <<<<<<< markers, delete any .theirs copy), then push", left)
+	}
 	snap, err := TakeSnapshot(root)
 	if err != nil {
 		return err
@@ -465,7 +498,7 @@ func push(ctx context.Context, c *Client, st *State, root, msg string, md core.M
 	if err != nil {
 		var ae *APIError
 		if errors.As(err, &ae) && ae.Status == 409 {
-			return fmt.Errorf("%s: %s moved on the server; clone again and reapply your work (merge support is coming)", st.Repo, st.Ref)
+			return fmt.Errorf("%s: %s moved on the server; run strata pull, then push again", st.Repo, st.Ref)
 		}
 		return err
 	}

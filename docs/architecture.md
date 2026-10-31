@@ -108,6 +108,25 @@ move `canary` first, then `main`.
    moves the change-ID pointer and the ref (both CAS), and adds index entries.
 3. A lost race returns `409`; nothing partial is visible.
 
+## Pull and merge
+
+Every change is recorded by a push, so a working copy never holds unpushed changes
+of its own, only uncommitted edits. `strata pull` therefore works like a rebase of those
+edits onto the server:
+
+1. Snapshot the working copy (yours), read HEAD's tree (base) and the ref's current
+   tree on the server (theirs).
+2. Per file: changed on one side only → that side wins (including adds and deletes);
+   changed the same way → kept; changed differently → text files merge line by line
+   (diff3), clashing regions get `<<<<<<< yours` / `>>>>>>> server <rev>` markers;
+   binary files keep yours and write `<file>.theirs`.
+3. HEAD moves to the server's revision; unresolved files go to
+   `.strata/conflicts.json`, and `push` refuses until no markers or `.theirs` copies
+   remain. The next push is a plain fast-forward, so history stays linear.
+
+For Layer-managed files the merge works on the repo's own contribution, then the
+inherited content is re-applied.
+
 ## Audit ledger and events
 
 Every write (repo created, settings changed, ref moved, change created, annotation)
@@ -167,8 +186,9 @@ Example: [policies/strata.cedar](policies/strata.cedar).
   verified in the parent change.
 - **Large files**: whole-file objects up to 5 GB. Next: content-defined chunking and
   multipart uploads.
-- **Merges**: pushes are fast-forward only. Next: three-way merge Lambda and
-  first-class conflicts.
+- **Merges**: `strata pull` merges on the client; histories stay linear. Next: branches
+  with server-side merge changes (two parents) and conflicts recorded in history, so a
+  reviewer can merge from the web console.
 - **Layers**: automatic wave rollouts (today: point canary repos at a `canary` ref, then move `main`), fleet drift view (which Layer revision each repo last pulled), Layer-level deny rules.
 - **Permissions**: repository-level today. Next: path-level rules (the changed paths
   of a push in the Cedar context) and a Cedar schema to validate policies.

@@ -74,6 +74,8 @@ type Snapshot struct {
 
 	root    string
 	managed *LayerState
+	// Paths maps each stored file (slash path) to its entry.
+	Paths map[string]core.TreeEntry
 }
 
 var alwaysIgnore = map[string]bool{StateDir: true, ".git": true, "node_modules": true}
@@ -128,7 +130,7 @@ func TakeSnapshot(root string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Snapshot{Objects: map[core.Hash]source{}, root: root, managed: managed}
+	s := &Snapshot{Objects: map[core.Hash]source{}, Paths: map[string]core.TreeEntry{}, root: root, managed: managed}
 	ig := loadIgnore(root)
 	h, _, err := s.dir(root, "", ig)
 	if err != nil {
@@ -188,12 +190,16 @@ func (s *Snapshot) dir(abs, rel string, ig ignorer) (core.Hash, int, error) {
 				h = core.HashBytes(own)
 				s.Objects[h] = source{data: own, size: int64(len(own))}
 				s.Files++
-				t.Entries = append(t.Entries, core.TreeEntry{Name: de.Name(), Kind: kind, Hash: h, Size: int64(len(own))})
+				e := core.TreeEntry{Name: de.Name(), Kind: kind, Hash: h, Size: int64(len(own))}
+				t.Entries = append(t.Entries, e)
+				s.Paths[r] = e
 				continue
 			}
 			s.Objects[h] = source{path: p, size: info.Size()}
 			s.Files++
-			t.Entries = append(t.Entries, core.TreeEntry{Name: de.Name(), Kind: kind, Hash: h, Size: info.Size()})
+			e := core.TreeEntry{Name: de.Name(), Kind: kind, Hash: h, Size: info.Size()}
+			t.Entries = append(t.Entries, e)
+			s.Paths[r] = e
 		default:
 			fmt.Fprintf(os.Stderr, "skipping %s: symlinks and special files are not supported yet\n", r)
 		}
