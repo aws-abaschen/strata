@@ -149,13 +149,21 @@ func VerifyChain(recs []core.AuditRecord, ps []core.AnchorProof, trust Trust) ([
 		bySeq[r.Seq] = r.Hash
 	}
 	var out []Checked
+	var prev *core.AnchorStatement
 	for _, p := range ps {
 		c, err := Verify(p, trust)
 		if err != nil {
 			return out, err
 		}
+		// Consecutive anchors must chain: a statement names the one before it.
+		if prev != nil && p.Statement.Seq == prev.Seq+1 && p.Statement.Prev != prev.DigestHex() {
+			return out, fmt.Errorf("anchor %d does not link to anchor %d", p.Statement.Seq, prev.Seq)
+		}
+		prev = &p.Statement
 		h, ok := bySeq[p.Leaf.Seq]
 		switch {
+		case len(recs) > 0 && p.Leaf.Repo != recs[0].Repo:
+			return out, fmt.Errorf("anchor %d is for %s, not %s", p.Statement.Seq, p.Leaf.Repo, recs[0].Repo)
 		case !ok:
 			return out, fmt.Errorf("anchor %d covers %s#%d, which the ledger no longer has", p.Statement.Seq, p.Leaf.Repo, p.Leaf.Seq)
 		case h != p.Leaf.Hash:

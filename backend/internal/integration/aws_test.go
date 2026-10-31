@@ -257,4 +257,15 @@ func TestDeployedStack(t *testing.T) {
 		t.Fatalf("anchor verification:\n%s", out)
 	}
 	t.Logf("ok: anchors\n%s", out)
+
+	// Exit: export the app to Git plus evidence from the real stores, and
+	// verify it offline against the real KMS key and timestamp tokens.
+	exp := filepath.Join(t.TempDir(), "export")
+	out = h.ok(a1, ana, "export", "--repo", app, "--out", exp)
+	t.Logf("ok: export\n%s", out)
+	out = h.ok(t.TempDir(), ana, "export", "verify", exp, "--anchor-key", keyFile)
+	if !strings.Contains(out, "verified export of "+app) || !strings.Contains(out, "signatures: verified with the pinned anchor key") || !strings.Contains(out, "RFC 3161") {
+		t.Fatalf("export verification:\n%s", out)
+	}
+	t.Logf("ok: export verified\n%s", out)
 }

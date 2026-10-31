@@ -59,6 +59,11 @@ func TestExportRoundTrip(t *testing.T) {
 	if _, err := job.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// A second anchor, so verifiers walk the anchor chain too.
+	h.ok(dir, bob, "annotate", "--label", "audited")
+	if rep, err := job.Run(context.Background()); err != nil || rep.Anchored == 0 {
+		t.Fatalf("second anchor: %+v %v", rep, err)
+	}
 	der, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	keyFile := filepath.Join(t.TempDir(), "anchor.pem")
 	os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644)
@@ -73,9 +78,17 @@ func TestExportRoundTrip(t *testing.T) {
 		return h.run(t.TempDir(), "nobody@example.com", "export", "verify", d, "--anchor-key", keyFile)
 	}
 	res, code := verify(out)
-	if code != 0 || !strings.Contains(res, "4 changes") || !strings.Contains(res, "1 annotations, 1 approvals") ||
-		!strings.Contains(res, "signatures: verified with the pinned anchor key") {
+	if code != 0 || !strings.Contains(res, "4 changes") || !strings.Contains(res, "2 annotations, 1 approvals") ||
+		!strings.Contains(res, "signatures: verified with the pinned anchor key") || !strings.Contains(res, "anchored 2 times") {
 		t.Fatalf("verify (exit %d):\n%s", code, res)
+	}
+
+	// The independent verifier, written from the spec in Python, agrees.
+	py := pythonVerifier(t, keyFile)
+	if py != nil {
+		if o, code := py(out); code != 0 || !strings.Contains(o, "4 changes") || !strings.Contains(o, "2 anchors") || !strings.Contains(o, "verified with the pinned key") {
+			t.Fatalf("Python verifier (exit %d):\n%s", code, o)
+		}
 	}
 
 	// Exports are reproducible: a second run gives the same Git commits.
@@ -165,6 +178,13 @@ func TestExportRoundTrip(t *testing.T) {
 			if code == 0 || !strings.Contains(res, "FAILED") || !strings.Contains(res, tc.want) {
 				t.Fatalf("tampering not caught (exit %d), want %q:\n%s", code, tc.want, res)
 			}
+			if py != nil {
+				if o, code := py(d); code != 1 || !strings.Contains(o, "FAILED") {
+					t.Fatalf("Python verifier missed it (exit %d):\n%s", code, o)
+				} else {
+					t.Log("python: " + strings.TrimSpace(o))
+				}
+			}
 		})
 	}
 }
@@ -205,4 +225,39 @@ func mustRead(t *testing.T, p string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// pythonVerifier runs tools/verify_export.py, or returns nil without Python.
+// STRATA_REQUIRE_PYTHON=1 (CI) makes a missing interpreter a failure.
+func pythonVerifier(t *testing.T, keyFile string) func(dir string) (string, int) {
+	t.Helper()
+	var py string
+	for _, n := range []string{"python3", "python"} {
+		if p, err := exec.LookPath(n); err == nil && exec.Command(p, "-c", "import sys; assert sys.version_info >= (3, 8)").Run() == nil {
+			py = p
+			break
+		}
+	}
+	if py == "" {
+		if os.Getenv("STRATA_REQUIRE_PYTHON") != "" {
+			t.Fatal("python 3 not found")
+		}
+		t.Log("python 3 not found: skipping the independent verifier")
+		return nil
+	}
+	script, _ := filepath.Abs(filepath.Join("..", "..", "..", "tools", "verify_export.py"))
+	args := []string{"-I", script}
+	if _, err := exec.LookPath("openssl"); err == nil {
+		args = append(args, "--anchor-key", keyFile)
+	}
+	return func(dir string) (string, int) {
+		o, err := exec.Command(py, append(append([]string{}, args...), dir)...).CombinedOutput()
+		code := 0
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return string(o), code
+	}
 }

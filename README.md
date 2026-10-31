@@ -28,6 +28,7 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Four-eyes approvals and protected refs: approvals bound to a revision, authors never count, ref-move facts in the Cedar context, approvers recorded in the ledger | done |
 | Break-glass: no standing admin access; time-boxed grants (ticket, scope, max 4h, fresh MFA), enforced outside Cedar so no policy can lock everyone out, every use tagged in the ledger, reviewed by another admin, alerted, overdue reviews alarmed | done |
 | `strata pull`: three-way merge of your edits with the server's latest (line-level for text, conflict markers, push blocked until resolved) | done |
+| Exit: `strata export` writes a repository as plain Git plus an evidence sidecar (sealed changes, trees, ledger, anchors, annotations, approvals); `strata export verify` and an independent Python verifier prove it complete and unaltered, offline ([format](docs/export-format.md)) | done |
 | Branch merges in the web console, wave rollouts, Git bridge | next |
 
 ## Layout
@@ -54,6 +55,9 @@ just install
 just test        # Go vet/tests, TS typecheck, web + CDK tests
 just deploy      # needs AWS credentials ($AWS_PROFILE, default "admin")
 ```
+
+If a deploy fails with "Unable to resolve AWS account", the SSO session expired
+(the AWS CLI may still work from cached credentials): run `aws sso login --profile admin`.
 
 On Windows use `just win::<task>`.
 
@@ -130,6 +134,21 @@ deleted or replaced on the server later fail verification. `strata breakglass au
 --verify` does the same for the break-glass ledger.
 
 See [docs/architecture.md](docs/architecture.md#anchoring-making-the-chain-external-evidence).
+
+### Export (exit)
+
+```sh
+strata export --repo payments --out payments-export     # add --break-glass for that ledger too
+strata export verify payments-export --anchor-key anchor.pem
+python3 tools/verify_export.py payments-export --anchor-key anchor.pem   # no Strata code needed
+git clone payments-export/git payments
+```
+
+The export is plain Git (every revision, amended-away ones included, under
+`refs/strata/revisions/`) plus the evidence in `strata/`. Both verifiers use the
+ledger as the list of what must be there, so a missing revision, approval or ref is
+caught, not only a changed one. Exports are reproducible: the same repository gives
+the same Git object names. See [docs/export-format.md](docs/export-format.md).
 
 ### Jira
 

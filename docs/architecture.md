@@ -215,6 +215,40 @@ until anchors are copied to a separate account.
   qualified one in production.
 - One anchor item holds every head, which limits it to a few thousand repositories.
 
+### Export: leaving with the evidence
+
+DORA Art. 28(8) asks for an exit strategy that works without the provider. `strata
+export` writes a repository as a plain Git repository plus a sidecar of evidence, and
+`strata export verify` checks it offline. [docs/export-format.md](export-format.md)
+is the specification.
+
+- **Client-side, read-only.** The CLI builds the export from the public API, so it
+  needs only read access and the same code works against any deployment. Nothing new
+  runs on the server.
+- **The ledger is the list.** Every write is in the repository's ledger, superseded
+  revisions included. The verifier replays it (`ChangeCreated`, `RefUpdated`,
+  `ChangeAnnotated`, `ApprovalGranted`, Layer settings) and requires the export to
+  hold exactly that, both ways. A dropped revision is caught as surely as an edited
+  one. The anchors, checked with a pinned key, make the ledger itself trustworthy up
+  to the last anchor.
+- **Hash the bytes, don't re-serialize.** Changes and trees are stored as the exact
+  bytes their SHA-256 names, so another language can verify them without copying Go's
+  JSON encoder. Only the ledger digest needs a defined encoding, given in the spec.
+- **Git is a view.** Commits, trees and blobs are written directly as loose objects
+  (no git binary, no library). That makes exports reproducible and lets the verifier
+  read them without Git. SHA-1 names are addresses; integrity comes from SHA-256.
+  Every revision keeps a ref under `refs/strata/revisions/` so `git gc` never drops
+  amended-away history.
+- **Two verifiers.** The Go one shares Strata's code. `tools/verify_export.py` uses
+  only Python's standard library (openssl for signatures) and was written from the
+  spec. The test suite runs both on every build, against a clean export and eight
+  kinds of tampering, so the spec cannot drift from the code without a failing test.
+- **Limits.** Layer cascades are not flattened: each repository exports its own tree,
+  and Layers export separately. `.git` entries and refs Git rejects stay in the
+  sidecar only. The Python verifier leaves RFC 3161 timestamps to `openssl ts`.
+  Each file is held in memory while it is exported, so a file larger than memory
+  cannot be exported yet.
+
 ## Permissions (policy-as-code)
 
 Every request is authorized with [Cedar](https://www.cedarpolicy.com/), evaluated
@@ -357,4 +391,4 @@ strata breakglass review bg-... --outcome accepted --note "diff matches INC-42"
 - **Layers**: automatic wave rollouts (today: point canary repos at a `canary` ref, then move `main`), fleet drift view (which Layer revision each repo last pulled), Layer-level deny rules.
 - **Permissions**: repository-level today. Next: path-level rules (the changed paths
   of a push in the Cedar context) and a Cedar schema to validate policies.
-- **Git bridge**, **semantic search**, **KMS per-object keys**, **Object Lock retention**.
+- **Git bridge** (live, two-way; one-way export is done), **semantic search**, **KMS per-object keys**, **Object Lock retention**.

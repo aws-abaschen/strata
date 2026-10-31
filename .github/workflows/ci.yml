@@ -39,6 +39,8 @@ jobs:
           cd .. && pnpm --filter @strata/web build
       - name: Go
         working-directory: backend
+        env:
+          STRATA_REQUIRE_PYTHON: '1' # the independent export verifier must run
         run: |
           test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
           go vet ./...
