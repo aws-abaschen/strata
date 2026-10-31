@@ -324,12 +324,19 @@ func (c *Change) Seal() ([]byte, error) {
 		return nil, err
 	}
 	c.CreatedAt = c.CreatedAt.UTC().Truncate(time.Millisecond)
-	c.Revision = ""
-	b, err := json.Marshal(c)
+	b, err := c.Preimage()
 	if err != nil {
 		return nil, err
 	}
 	c.Revision = HashBytes(b)
+	return json.Marshal(c)
+}
+
+// Preimage returns the exact bytes a sealed change's Revision is the SHA-256
+// of: its JSON form with Revision empty. Exports store these bytes, so a
+// verifier hashes them instead of re-serializing JSON.
+func (c Change) Preimage() ([]byte, error) {
+	c.Revision = ""
 	return json.Marshal(c)
 }
 

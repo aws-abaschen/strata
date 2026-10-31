@@ -101,29 +101,7 @@ func (ac anchorCheck) verify(label, key string, recs []core.AuditRecord, ps []co
 	if err != nil {
 		return fail("%v", err)
 	}
-	var lastTS time.Time
-	stamped := 0
-	for _, ch := range checked {
-		if ch.TimestampOK {
-			stamped++
-			lastTS = ch.TimestampAt
-		}
-	}
-	last := checked[len(checked)-1]
-	fmt.Fprintf(out, "anchored %d times, through seq %d (anchor %d)\n", len(checked), last.Leaf.Seq, last.Seq)
-	if ac.trust.Key != nil {
-		fmt.Fprintf(out, "  signatures: verified with the pinned anchor key\n")
-	} else {
-		fmt.Fprintf(out, "  signatures: NOT checked, no anchor key pinned (--anchor-key or STRATA_ANCHOR_KEY)\n")
-	}
-	switch {
-	case stamped == 0:
-		fmt.Fprintf(out, "  timestamps: none (%s)\n", last.TimestampErr)
-	case ac.trust.TSARoot != nil:
-		fmt.Fprintf(out, "  timestamps: %d of %d, RFC 3161, authority verified against the pinned root, latest %s\n", stamped, len(checked), lastTS.UTC().Format(time.RFC3339))
-	default:
-		fmt.Fprintf(out, "  timestamps: %d of %d, RFC 3161, latest %s; authority NOT checked (--tsa-ca or STRATA_TSA_CA)\n", stamped, len(checked), lastTS.UTC().Format(time.RFC3339))
-	}
+	printAnchors(out, "", checked, ac)
 	if ac.witness == "" {
 		fmt.Fprintf(out, "  witness: anchors not remembered (run in a workspace or pass --witness)\n")
 		return nil
@@ -147,6 +125,48 @@ func (ac anchorCheck) verify(label, key string, recs []core.AuditRecord, ps []co
 	}
 	fmt.Fprintf(out, "  witness: %d anchors remembered in %s\n", len(w.Chains[key]), ac.witness)
 	return nil
+}
+
+// printAnchors summarizes what checking a chain's anchors established.
+func printAnchors(out io.Writer, label string, checked []anchor.Checked, ac anchorCheck) {
+	if label != "" {
+		label += " "
+	}
+	if len(checked) == 0 {
+		fmt.Fprintf(out, "%snot anchored yet: the anchor job runs every 15 minutes\n", label)
+		return
+	}
+	var lastTS time.Time
+	stamped := 0
+	for _, ch := range checked {
+		if ch.TimestampOK {
+			stamped++
+			lastTS = ch.TimestampAt
+		}
+	}
+	last := checked[len(checked)-1]
+	fmt.Fprintf(out, "%sanchored %d times, through seq %d (anchor %d)\n", label, len(checked), last.Leaf.Seq, last.Seq)
+	if ac.trust.Key != nil {
+		fmt.Fprintf(out, "  signatures: verified with the pinned anchor key\n")
+	} else {
+		fmt.Fprintf(out, "  signatures: NOT checked, no anchor key pinned (--anchor-key or STRATA_ANCHOR_KEY)\n")
+	}
+	switch {
+	case stamped == 0:
+		fmt.Fprintf(out, "  timestamps: none (%s)\n", last.TimestampErr)
+	case ac.trust.TSARoot != nil:
+		fmt.Fprintf(out, "  timestamps: %d of %d, RFC 3161, authority verified against the pinned root, latest %s\n", stamped, len(checked), lastTS.UTC().Format(time.RFC3339))
+	default:
+		fmt.Fprintf(out, "  timestamps: %d of %d, RFC 3161, latest %s; authority NOT checked (--tsa-ca or STRATA_TSA_CA)\n", stamped, len(checked), lastTS.UTC().Format(time.RFC3339))
+	}
+}
+
+// abs resolves p against the command's directory.
+func abs(dir, p string) string {
+	if filepath.IsAbs(p) || dir == "" {
+		return p
+	}
+	return filepath.Join(dir, p)
 }
 
 // loadTrust reads the pinned anchor key and timestamp roots (either may be empty).

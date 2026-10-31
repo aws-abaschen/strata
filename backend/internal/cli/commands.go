@@ -33,6 +33,10 @@ Usage:
   strata find --work-item KEY | --label LABEL   search every repository
   strata audit [-n 20] [--verify]               the ledger, hash chain verified here
 
+Exit (DORA Art. 28(8)): plain Git plus the evidence, checked offline
+  strata export --repo NAME --out DIR [--break-glass]
+  strata export verify DIR [--anchor-key PEM] [--tsa-ca PEM]
+
 Break-glass (strata-admins; time-boxed, reviewed afterwards by another admin):
   strata breakglass start --reason TEXT --work-item INC-1 --repo NAME [--for 1h]
   strata breakglass end | list [--open] | show ID | audit [--verify]
@@ -143,6 +147,8 @@ func run(ctx context.Context, args []string, env Env) error {
 		return repoCmd(ctx, args, env)
 	case "breakglass":
 		return breakglassCmd(ctx, args, env)
+	case "export":
+		return exportCmd(ctx, args, env)
 	case "init":
 		repo := fs.String("repo", "", "repository name")
 		ref := fs.String("ref", "main", "ref to push to")
