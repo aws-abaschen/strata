@@ -8,6 +8,7 @@ new StrataStack(app, 'Strata', {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: ctx('region') ?? 'eu-west-1' },
   authDomainPrefix: ctx('authDomainPrefix'),
   jiraSecretArn: ctx('jiraSecretArn'),
+  alarmEmail: ctx('alarmEmail'),
 })
 
 Tags.of(app).add('project', 'strata')

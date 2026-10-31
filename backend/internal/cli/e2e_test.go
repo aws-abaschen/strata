@@ -29,11 +29,14 @@ type harness struct {
 
 // newHarness serves the API and the memory store's upload URLs. The bearer
 // token stands in for the verified identity.
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessMode(t, true) }
+
+// newHarnessMode serves the API with open bootstrap on or off (production: off).
+func newHarnessMode(t *testing.T, openBootstrap bool) *harness {
 	mem := store.NewMemory()
 	ev := &recorder{}
 	mem.OnAudit = func(r core.AuditRecord) { ev.types = append(ev.types, r.Action) }
-	a := &api.API{Objects: mem, Meta: mem, WebURL: "https://strata.example.com"}
+	a := &api.API{Objects: mem, Meta: mem, WebURL: "https://strata.example.com", OpenBootstrap: openBootstrap}
 	h := a.Handler()
 	mux := http.NewServeMux()
 	mux.Handle("/_objects/", mem.UploadHandler())

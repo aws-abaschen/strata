@@ -20,7 +20,7 @@ func main() {
 	flag.Parse()
 	mem := store.NewMemory()
 	mem.BaseURL = "http://" + *addr
-	h := (&api.API{Objects: mem, Meta: mem, WebURL: "http://localhost:5173"}).Handler()
+	h := (&api.API{Objects: mem, Meta: mem, WebURL: "http://localhost:5173", OpenBootstrap: true}).Handler()
 
 	mux := http.NewServeMux()
 	mux.Handle("/_objects/", mem.UploadHandler())

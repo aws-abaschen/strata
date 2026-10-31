@@ -168,15 +168,39 @@ tickets like any change. They apply as soon as that repo's `main` moves.
 - A repo the caller may not read answers `404`, and is left out of listings and
   work-item or label searches. Other denials answer `403` with the deciding policy ids
   (`<file>#<n>`).
-- Bootstrap: until `strata-policies` has a change on `main`, every signed-in user is
-  allowed. Create that repo first, with an admin.
+- Fail-closed bootstrap: until `strata-policies` has a change on `main`, only members
+  of `strata-admins` can do anything; everyone else gets `404`/`403`, and `GET /me`
+  reports `"authorization": "not-configured"`. An admin creates `strata-policies` and
+  pushes policies first. Open bootstrap exists only as an explicit `OpenBootstrap`
+  field set by the dev server and tests, never read from the Lambda environment.
+  If loading the policies fails, requests are denied, never allowed.
+- `main` of the policy repository cannot be deleted (that would reopen bootstrap).
 - Break-glass: `Group::"strata-admins"` (created in Cognito by the stack) is always
-  allowed unless a `forbid` matches.
+  allowed unless a `forbid` matches. Recovery from a lock-out is at AWS level:
+  `aws cognito-idp admin-add-user-to-group --user-pool-id <pool> --username <user> --group-name strata-admins`
+  (IAM-gated and recorded in CloudTrail).
 - A push (or ref move) that would install policies that do not parse is rejected, so a
   typo cannot lock everyone out.
 - Reading inherited Layer files needs `read` on the Layer repositories.
 
 Example: [policies/strata.cedar](policies/strata.cedar).
+
+## Security and operations baseline
+
+- **Encryption:** customer-managed KMS keys with yearly rotation, one each for the data
+  bucket, the audit bucket and the index table (S3 bucket keys on, so cost stays low).
+  Keys are retained if the stack is deleted. Objects written before the keys were added
+  stay under S3-managed keys.
+- **Identity:** Cognito, no self sign-up, MFA required (TOTP). The JWT groups claim
+  feeds Cedar groups.
+- **Alarms** (SNS topic `AlarmTopic`, optional email via `-c alarmEmail=...`):
+  ledger more than 5 minutes behind the table stream, ledger errors, any message in the
+  ledger or tracker dead-letter queue, and CloudTrail events that change or delete the
+  ledger function or its stream mapping (an attempt to switch the evidence off).
+- **Verified against real AWS:** `go test -tags aws ./internal/integration/` runs the
+  CLI and API against a deployed stack (presigned uploads, transactions, ledger archive
+  under Object Lock). The in-memory store accepts transaction shapes DynamoDB rejects, so
+  run it after any change to `internal/store`.
 
 ## Known gaps and next steps
 

@@ -39,8 +39,10 @@ type API struct {
 	WebURL string
 	// PolicyRepo holds the Cedar policies (default authz.DefaultPolicyRepo).
 	PolicyRepo string
-	Now        func() time.Time
-	Log        *slog.Logger
+	// OpenBootstrap allows everyone until policies exist: dev server and tests only.
+	OpenBootstrap bool
+	Now           func() time.Time
+	Log           *slog.Logger
 
 	layers *layers.Resolver
 	authz  *authz.Authorizer
@@ -95,7 +97,7 @@ func (a *API) log() *slog.Logger {
 // Handler returns the routed API.
 func (a *API) Handler() http.Handler {
 	a.layers = &layers.Resolver{Meta: a.Meta, Objects: a.Objects}
-	a.authz = &authz.Authorizer{Meta: a.Meta, Objects: a.Objects, PolicyRepo: a.PolicyRepo}
+	a.authz = &authz.Authorizer{Meta: a.Meta, Objects: a.Objects, PolicyRepo: a.PolicyRepo, OpenBootstrap: a.OpenBootstrap}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /me", a.me)
 	mux.HandleFunc("GET /repos", a.listRepos)
@@ -244,7 +246,12 @@ func (a *API) audit(r *http.Request, action string, detail any) (core.AuditEntry
 }
 
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"identity": identity(r), "groups": principal(r).Groups})
+	mode, err := a.authz.Mode(r.Context())
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"identity": identity(r), "groups": principal(r).Groups, "authorization": mode})
 }
 
 func (a *API) listRepos(w http.ResponseWriter, r *http.Request) {
@@ -352,6 +359,11 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readJSON(r, &in); err != nil {
 		a.fail(w, r, err)
+		return
+	}
+	if in.Target == "" && a.authz.IsPolicyRepo(rp.Name) && name == "main" {
+		// Without main the deployment would fall back to bootstrap.
+		a.fail(w, r, fmt.Errorf("%w: main of the policy repository cannot be deleted", core.ErrPolicy))
 		return
 	}
 	if in.Target != "" {

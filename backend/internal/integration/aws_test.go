@@ -89,9 +89,10 @@ func TestDeployedStack(t *testing.T) {
 	}
 	s3c := s3.NewFromConfig(cfg, func(o *s3.Options) { o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired })
 	a := &api.API{
-		Objects:    &store.S3{Client: s3c, Presign: s3.NewPresignClient(s3c), Bucket: dataBucket},
-		Meta:       &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: table},
-		PolicyRepo: fmt.Sprintf("it-nopolicy-%d", time.Now().UnixNano()), // no policy repo: bootstrap mode
+		Objects:       &store.S3{Client: s3c, Presign: s3.NewPresignClient(s3c), Bucket: dataBucket},
+		Meta:          &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: table},
+		PolicyRepo:    fmt.Sprintf("it-nopolicy-%d", time.Now().UnixNano()), // no policy repo: bootstrap mode
+		OpenBootstrap: true,
 	}
 	handler := a.Handler()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

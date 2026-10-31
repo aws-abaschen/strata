@@ -65,3 +65,11 @@ test('audit records stream to the ledger, archived under Object Lock', () => {
     BisectBatchOnFunctionError: true,
   })
 })
+
+test('ledger failures and tampering raise alarms', () => {
+  template.resourceCountIs('AWS::CloudWatch::Alarm', 4)
+  template.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'IteratorAge', Threshold: 300000 })
+  template.hasResourceProperties('AWS::Events::Rule', {
+    EventPattern: Match.objectLike({ source: ['aws.lambda'], detail: Match.objectLike({ eventName: Match.arrayWith([{ prefix: 'UpdateEventSourceMapping' }]) }) }),
+  })
+})

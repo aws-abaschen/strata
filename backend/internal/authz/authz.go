@@ -66,6 +66,11 @@ type Authorizer struct {
 	Meta       store.Meta
 	Objects    store.Objects
 	PolicyRepo string
+	// OpenBootstrap lets every signed-in user do everything until the policy
+	// repository has a change on main. Off in production: until policies
+	// exist, only members of strata-admins are allowed. Only the dev server
+	// and tests turn it on; it is deliberately not read from the environment.
+	OpenBootstrap bool
 
 	mu        sync.Mutex
 	cachedRev core.Hash
@@ -186,7 +191,9 @@ func (a *Authorizer) Policies(ctx context.Context) (*cedar.PolicySet, core.Hash,
 	var ps *cedar.PolicySet
 	if rev == "" {
 		ps = cedar.NewPolicySet()
-		builtin(ps, "bootstrap", bootstrapPolicy)
+		if a.OpenBootstrap {
+			builtin(ps, "bootstrap", bootstrapPolicy)
+		}
 	} else {
 		c, err := a.Meta.GetChange(ctx, repo, rev)
 		if err != nil {
@@ -298,4 +305,18 @@ func (a *Authorizer) Require(ctx context.Context, p Principal, action Action, re
 		return fmt.Errorf("%w: %s may not %s %s (%s)", core.ErrPolicy, p.ID, action, repo.Name, why)
 	}
 	return nil
+}
+
+// Mode describes how requests are being authorized, for /me and operators.
+func (a *Authorizer) Mode(ctx context.Context) (string, error) {
+	_, rev, err := a.Policies(ctx)
+	switch {
+	case err != nil:
+		return "", err
+	case rev != "":
+		return "policies", nil
+	case a.OpenBootstrap:
+		return "open-bootstrap", nil
+	}
+	return "not-configured", nil
 }

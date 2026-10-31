@@ -9,6 +9,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins'
 import * as cognito from 'aws-cdk-lib/aws-cognito'
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb'
 import * as events from 'aws-cdk-lib/aws-events'
+import * as kms from 'aws-cdk-lib/aws-kms'
 import * as targets from 'aws-cdk-lib/aws-events-targets'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
 import * as logs from 'aws-cdk-lib/aws-logs'
@@ -16,6 +17,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment'
 import * as secrets from 'aws-cdk-lib/aws-secretsmanager'
 import * as sqs from 'aws-cdk-lib/aws-sqs'
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch'
+import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions'
+import * as sns from 'aws-cdk-lib/aws-sns'
+import * as subs from 'aws-cdk-lib/aws-sns-subscriptions'
 import { DynamoEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources'
 import type { Construct } from 'constructs'
 
@@ -36,6 +41,8 @@ export interface StrataStackProps extends StackProps {
   auditLockMode?: 'governance' | 'compliance'
   /** Repository holding the Cedar policies. Default strata-policies. */
   policyRepo?: string
+  /** Email that receives ledger and tracker alarms (must confirm the subscription). */
+  alarmEmail?: string
 }
 
 /**
@@ -49,10 +56,20 @@ export class StrataStack extends Stack {
     // --- Content: objects and sealed changes, written once by key. ---
     // Object Lock is enabled now (it cannot be added later) so a compliance
     // retention period can be switched on per customer without a migration.
+    // Customer-managed keys (rotated yearly), one per store so key custody can
+    // be separated later. Retained on stack deletion: data stays readable.
+    const key = (id: string, alias: string) =>
+      new kms.Key(this, id, { alias: `alias/strata-${alias}`, enableKeyRotation: true, removalPolicy: RemovalPolicy.RETAIN })
+    const dataKey = key('DataKey', 'data')
+    const indexKey = key('IndexKey', 'index')
+    const auditKey = key('AuditKey', 'audit')
+
     const data = new s3.Bucket(this, 'Data', {
       objectLockEnabled: true,
       versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: dataKey,
+      bucketKeyEnabled: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -61,6 +78,7 @@ export class StrataStack extends Stack {
 
     // --- Index: repos, refs, changes, work-item and label lookups. ---
     const table = new dynamodb.TableV2(this, 'Index', {
+      encryption: dynamodb.TableEncryptionV2.customerManagedKey(indexKey),
       partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
       billing: dynamodb.Billing.onDemand(),
@@ -126,7 +144,7 @@ export class StrataStack extends Stack {
       autoVerify: { email: true },
       standardAttributes: { email: { required: true, mutable: true } },
       passwordPolicy: { minLength: 12 },
-      mfa: cognito.Mfa.OPTIONAL,
+      mfa: cognito.Mfa.REQUIRED,
       mfaSecondFactor: { otp: true, sms: false },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -216,7 +234,9 @@ export class StrataStack extends Stack {
           ? s3.ObjectLockRetention.compliance(retention)
           : s3.ObjectLockRetention.governance(retention),
       versioned: true,
-      encryption: s3.BucketEncryption.S3_MANAGED,
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: auditKey,
+      bucketKeyEnabled: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -257,6 +277,53 @@ export class StrataStack extends Stack {
       targets: [new targets.LambdaFunction(trackerFn, { retryAttempts: 8, maxEventAge: Duration.hours(24), deadLetterQueue: dlq })],
     })
 
+
+    // --- Operational alarms (DORA Art. 17 incident detection): the audit
+    // ledger must never silently stop, and nobody may tamper with it. ---
+    const alarmTopic = new sns.Topic(this, 'Alarms', { enforceSSL: true })
+    if (props.alarmEmail) alarmTopic.addSubscription(new subs.EmailSubscription(props.alarmEmail))
+    const alarm = (id: string, metric: cloudwatch.IMetric, threshold: number, description: string) => {
+      const a = new cloudwatch.Alarm(this, id, {
+        metric,
+        threshold,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        alarmDescription: description,
+      })
+      a.addAlarmAction(new cwActions.SnsAction(alarmTopic))
+      return a
+    }
+    const fiveMin = Duration.minutes(5)
+    alarm(
+      'LedgerLagAlarm',
+      new cloudwatch.Metric({
+        namespace: 'AWS/Lambda',
+        metricName: 'IteratorAge',
+        dimensionsMap: { FunctionName: ledgerFn.functionName },
+        statistic: 'Maximum',
+        period: fiveMin,
+      }),
+      5 * 60 * 1000,
+      'The audit ledger is more than 5 minutes behind the table stream. The stream keeps 24 hours.',
+    )
+    alarm('LedgerErrorsAlarm', ledgerFn.metricErrors({ period: fiveMin }), 0, 'The audit ledger Lambda is failing.')
+    alarm('LedgerDlqAlarm', ledgerDlq.metricApproximateNumberOfMessagesVisible({ period: fiveMin }), 0, 'Audit records are in the ledger dead-letter queue and not archived.')
+    alarm('TrackerDlqAlarm', dlq.metricApproximateNumberOfMessagesVisible({ period: fiveMin }), 0, 'Work-tracker events failed after all retries.')
+
+    // Someone disabling or changing the ledger is an incident. CloudTrail
+    // management events reach the default event bus without extra setup.
+    const trail = { source: ['aws.lambda'], detailType: ['AWS API Call via CloudTrail'] }
+    for (const [id, detail] of [
+      ['LedgerMappingChanged', { eventName: [{ prefix: 'UpdateEventSourceMapping' }, { prefix: 'DeleteEventSourceMapping' }] }],
+      ['LedgerCodeChanged', { eventName: [{ prefix: 'UpdateFunctionCode' }, { prefix: 'UpdateFunctionConfiguration' }, { prefix: 'DeleteFunction' }], requestParameters: { functionName: [ledgerFn.functionName] } }],
+    ] as const) {
+      new events.Rule(this, id, {
+        eventPattern: { ...trail, detail },
+        targets: [new targets.SnsTopic(alarmTopic)],
+        description: 'Audit ledger configuration changed',
+      })
+    }
     // --- Web console files and its runtime config. ---
     const webDist = path.join(root, 'web/dist')
     const config = {
@@ -289,6 +356,7 @@ export class StrataStack extends Stack {
       EventBus: bus.eventBusName,
       TrackerDlq: dlq.queueName,
       AuditBucket: auditBucket.bucketName,
+      AlarmTopic: alarmTopic.topicArn,
     }
     for (const [k, v] of Object.entries(out)) new CfnOutput(this, k, { value: v })
   }

@@ -311,3 +311,26 @@ func (c *Client) Audit(ctx context.Context, repo string) ([]core.AuditRecord, er
 		after = *p.Next
 	}
 }
+
+// Me is the caller as the server sees it.
+type Me struct {
+	Identity      string   `json:"identity"`
+	Groups        []string `json:"groups"`
+	Authorization string   `json:"authorization"`
+}
+
+// Me asks who the server thinks the caller is, and how requests are authorized.
+func (c *Client) Me(ctx context.Context) (Me, error) {
+	var m Me
+	err := c.do(ctx, http.MethodGet, "/me", nil, &m)
+	return m, err
+}
+
+// DeleteRef deletes a ref (an empty target), whatever it points at.
+func (c *Client) DeleteRef(ctx context.Context, repo, name string) error {
+	r, ok, err := c.GetRef(ctx, repo, name)
+	if err != nil || !ok {
+		return err
+	}
+	return c.do(ctx, http.MethodPut, "/repos/"+esc(repo)+"/refs/"+name, map[string]any{"target": "", "expected": r.Target}, nil)
+}

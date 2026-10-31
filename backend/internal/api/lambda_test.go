@@ -13,7 +13,7 @@ import (
 
 func TestLambdaAdapter(t *testing.T) {
 	mem := store.NewMemory()
-	h := (&API{Objects: mem, Meta: mem}).LambdaHandler()
+	h := (&API{Objects: mem, Meta: mem, OpenBootstrap: true}).LambdaHandler()
 	ev := events.APIGatewayV2HTTPRequest{
 		RawPath:         "/repos",
 		Body:            base64.StdEncoding.EncodeToString([]byte(`{"name":"payments"}`)),
