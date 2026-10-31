@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws-abaschen/strata/backend/internal/authz"
 	"github.com/aws-abaschen/strata/backend/internal/core"
 	"github.com/aws-abaschen/strata/backend/internal/layers"
 	"github.com/aws-abaschen/strata/backend/internal/store"
@@ -33,27 +34,49 @@ const (
 // API serves the HTTP endpoints.
 type API struct {
 	Objects store.Objects
-	layers  *layers.Resolver
 	Meta    store.Meta
 	// WebURL is the web console, used for links in events (Jira, Slack...).
 	WebURL string
-	Now    func() time.Time
-	Log    *slog.Logger
+	// PolicyRepo holds the Cedar policies (default authz.DefaultPolicyRepo).
+	PolicyRepo string
+	Now        func() time.Time
+	Log        *slog.Logger
+
+	layers *layers.Resolver
+	authz  *authz.Authorizer
 }
 
 type ctxKey struct{}
 
-// WithIdentity returns a context carrying the caller's identity. The Lambda
-// adapter sets it from the verified JWT; the API never trusts a client-sent
-// author.
-func WithIdentity(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, ctxKey{}, id)
+// WithPrincipal returns a context carrying the caller. The Lambda adapter
+// sets it from the verified JWT; the API never trusts a client-sent author.
+func WithPrincipal(ctx context.Context, p authz.Principal) context.Context {
+	return context.WithValue(ctx, ctxKey{}, p)
 }
 
-func identity(r *http.Request) string {
-	id, _ := r.Context().Value(ctxKey{}).(string)
-	return id
+// WithIdentity is WithPrincipal for a caller without groups.
+func WithIdentity(ctx context.Context, id string) context.Context {
+	return WithPrincipal(ctx, authz.Principal{ID: id})
 }
+
+// ParseDevToken reads "user" or "user;group1,group2" (dev server and tests).
+func ParseDevToken(tok string) authz.Principal {
+	id, groups, _ := strings.Cut(tok, ";")
+	p := authz.Principal{ID: id}
+	for _, g := range strings.Split(groups, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			p.Groups = append(p.Groups, g)
+		}
+	}
+	return p
+}
+
+func principal(r *http.Request) authz.Principal {
+	p, _ := r.Context().Value(ctxKey{}).(authz.Principal)
+	return p
+}
+
+func identity(r *http.Request) string { return principal(r).ID }
 
 func (a *API) now() time.Time {
 	if a.Now != nil {
@@ -72,6 +95,7 @@ func (a *API) log() *slog.Logger {
 // Handler returns the routed API.
 func (a *API) Handler() http.Handler {
 	a.layers = &layers.Resolver{Meta: a.Meta, Objects: a.Objects}
+	a.authz = &authz.Authorizer{Meta: a.Meta, Objects: a.Objects, PolicyRepo: a.PolicyRepo}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /me", a.me)
 	mux.HandleFunc("GET /repos", a.listRepos)
@@ -148,17 +172,59 @@ func limit(r *http.Request) int {
 	return min(n, maxLimit)
 }
 
-// repo loads the {repo} path value and checks it exists.
-func (a *API) repo(r *http.Request) (core.Repo, error) {
+// repoFor loads the {repo} path value and checks the caller may do action
+// on it. A caller who may not read a repository is told it does not exist.
+func (a *API) repoFor(r *http.Request, action authz.Action) (core.Repo, error) {
 	name := r.PathValue("repo")
 	if err := core.ValidateRepoName(name); err != nil {
 		return core.Repo{}, err
 	}
+	notFound := fmt.Errorf("repository %q: %w", name, store.ErrNotFound)
 	rp, err := a.Meta.GetRepo(r.Context(), name)
 	if errors.Is(err, store.ErrNotFound) {
-		return core.Repo{}, fmt.Errorf("repository %q: %w", name, store.ErrNotFound)
+		return core.Repo{}, notFound
 	}
-	return rp, err
+	if err != nil {
+		return core.Repo{}, err
+	}
+	if action != authz.Read {
+		if d, err := a.authz.Check(r.Context(), principal(r), authz.Read, rp); err != nil {
+			return core.Repo{}, err
+		} else if !d.Allowed {
+			return core.Repo{}, notFound
+		}
+	}
+	if err := a.authz.Require(r.Context(), principal(r), action, rp); err != nil {
+		if action == authz.Read {
+			return core.Repo{}, notFound
+		}
+		return core.Repo{}, err
+	}
+	return rp, nil
+}
+
+// readable filters search results to repositories the caller may read.
+func (a *API) readable(r *http.Request, in []core.ChangeSummary) ([]core.ChangeSummary, error) {
+	ok := map[string]bool{}
+	out := []core.ChangeSummary{}
+	for _, s := range in {
+		allowed, seen := ok[s.Repo]
+		if !seen {
+			rp, err := a.Meta.GetRepo(r.Context(), s.Repo)
+			if err != nil {
+				return nil, err
+			}
+			d, err := a.authz.Check(r.Context(), principal(r), authz.Read, rp)
+			if err != nil {
+				return nil, err
+			}
+			allowed, ok[s.Repo] = d.Allowed, d.Allowed
+		}
+		if allowed {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 func hashParam(r *http.Request, name string) (core.Hash, error) {
@@ -178,7 +244,7 @@ func (a *API) audit(r *http.Request, action string, detail any) (core.AuditEntry
 }
 
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"identity": identity(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"identity": identity(r), "groups": principal(r).Groups})
 }
 
 func (a *API) listRepos(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +253,18 @@ func (a *API) listRepos(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"repos": repos})
+	visible := []core.Repo{}
+	for _, rp := range repos {
+		d, err := a.authz.Check(r.Context(), principal(r), authz.Read, rp)
+		if err != nil {
+			a.fail(w, r, err)
+			return
+		}
+		if d.Allowed {
+			visible = append(visible, rp)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"repos": visible})
 }
 
 func (a *API) createRepo(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +295,10 @@ func (a *API) createRepo(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
+	if err := a.authz.Require(r.Context(), principal(r), authz.Create, rp); err != nil {
+		a.fail(w, r, err)
+		return
+	}
 	entry, err := a.audit(r, "RepoCreated", map[string]any{"repo": rp.Name, "settings": rp})
 	if err != nil {
 		a.fail(w, r, err)
@@ -231,7 +312,7 @@ func (a *API) createRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getRepo(w http.ResponseWriter, r *http.Request) {
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -240,7 +321,7 @@ func (a *API) getRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listRefs(w http.ResponseWriter, r *http.Request) {
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -255,7 +336,7 @@ func (a *API) listRefs(w http.ResponseWriter, r *http.Request) {
 
 // updateRef moves, creates or deletes a ref with compare-and-swap.
 func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Write)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -274,9 +355,16 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Target != "" {
-		if _, err := a.Meta.GetChange(r.Context(), rp.Name, in.Target); err != nil {
+		c, err := a.Meta.GetChange(r.Context(), rp.Name, in.Target)
+		if err != nil {
 			a.fail(w, r, fmt.Errorf("target revision: %w", err))
 			return
+		}
+		if a.authz.IsPolicyRepo(rp.Name) && name == "main" {
+			if err := a.authz.Validate(r.Context(), c.Tree); err != nil {
+				a.fail(w, r, fmt.Errorf("policies: %w", err))
+				return
+			}
 		}
 	}
 	ref := core.Ref{Name: name, Target: in.Target, UpdatedBy: identity(r), UpdatedAt: a.now().UTC()}
@@ -295,7 +383,7 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 // negotiate takes the objects a client wants to push and returns upload URLs
 // for the ones the repository does not have yet.
 func (a *API) negotiate(w http.ResponseWriter, r *http.Request) {
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Write)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -345,7 +433,7 @@ func (a *API) negotiate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) objectURL(w http.ResponseWriter, r *http.Request) {
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -377,7 +465,7 @@ func (a *API) loadTree(ctx context.Context, repo string, h core.Hash) (core.Tree
 // tree lists a directory at a revision: GET /repos/{repo}/tree/{rev}?path=a/b.
 // A path to a file returns the file entry and a download URL.
 func (a *API) tree(w http.ResponseWriter, r *http.Request) {
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -531,7 +619,7 @@ type createChangeInput struct {
 
 func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Write)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -566,6 +654,14 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 	if err := a.checkLocked(ctx, rp, in.Tree); err != nil {
 		a.fail(w, r, err)
 		return
+	}
+	if a.authz.IsPolicyRepo(rp.Name) && in.Ref == "main" {
+		// The policies this push would install must parse: a broken policy
+		// file must not lock everyone out.
+		if err := a.authz.Validate(ctx, in.Tree); err != nil {
+			a.fail(w, r, fmt.Errorf("policies: %w", err))
+			return
+		}
 	}
 
 	md := core.Metadata{WorkItems: core.ParseWorkItems(in.Message)}
@@ -635,7 +731,7 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getChange(w http.ResponseWriter, r *http.Request) {
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -670,7 +766,7 @@ func (a *API) getChange(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) annotate(w http.ResponseWriter, r *http.Request) {
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Annotate)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -725,7 +821,7 @@ func (a *API) annotate(w http.ResponseWriter, r *http.Request) {
 // GET /repos/{repo}/log?ref=main or ?rev=<hash>.
 func (a *API) history(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -792,6 +888,9 @@ func (a *API) findWorkItem(w http.ResponseWriter, r *http.Request) {
 	md.Normalize()
 	wi = md.WorkItems[0]
 	res, err := a.Meta.FindByWorkItem(r.Context(), wi.System, wi.Key, limit(r))
+	if err == nil {
+		res, err = a.readable(r, res)
+	}
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -806,6 +905,9 @@ func (a *API) findLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := a.Meta.FindByLabel(r.Context(), md.Labels[0], limit(r))
+	if err == nil {
+		res, err = a.readable(r, res)
+	}
 	if err != nil {
 		a.fail(w, r, err)
 		return

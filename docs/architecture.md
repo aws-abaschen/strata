@@ -132,6 +132,33 @@ Event `detail` = the write's payload (for `ChangeCreated`: repo, revision, chang
 subject, author, ref, previous target, metadata, link) plus
 `audit: {repo, seq, hash, actor, at}`.
 
+## Permissions (policy-as-code)
+
+Every request is authorized with [Cedar](https://www.cedarpolicy.com/), evaluated
+in the API Lambda with the official `cedar-go` library (no extra service, no extra
+latency). Policies are `.cedar` files in a Strata repository, `strata-policies` by
+default (`-c policyRepo=...`), so they are versioned, reviewed, audited and linked to
+tickets like any change. They apply as soon as that repo's `main` moves.
+
+| Entity | Notes |
+| --- | --- |
+| `User::"<email>"` | from the verified JWT; parents: `Group::"<g>"` for each `cognito:groups` value |
+| `Repo::"<name>"` | attributes `name`, `kind`; parent: the Layer it extends, so `resource in Repo::"payments-rules"` matches every repo inheriting from it |
+| `Action::"read" \| "write" \| "annotate" \| "admin" \| "create"` | read: clone, log, browse, layers, audit · write: push, move refs · annotate: link work items, labels, notes · admin: settings · create: new repo |
+
+- A repo the caller may not read answers `404`, and is left out of listings and
+  work-item or label searches. Other denials answer `403` with the deciding policy ids
+  (`<file>#<n>`).
+- Bootstrap: until `strata-policies` has a change on `main`, every signed-in user is
+  allowed. Create that repo first, with an admin.
+- Break-glass: `Group::"strata-admins"` (created in Cognito by the stack) is always
+  allowed unless a `forbid` matches.
+- A push (or ref move) that would install policies that do not parse is rejected, so a
+  typo cannot lock everyone out.
+- Reading inherited Layer files needs `read` on the Layer repositories.
+
+Example: [policies/strata.cedar](policies/strata.cedar).
+
 ## Known gaps and next steps
 
 - **Audit of reads**: only writes are in the ledger. Reads can be logged with API
@@ -143,6 +170,6 @@ subject, author, ref, previous target, metadata, link) plus
 - **Merges**: pushes are fast-forward only. Next: three-way merge Lambda and
   first-class conflicts.
 - **Layers**: automatic wave rollouts (today: point canary repos at a `canary` ref, then move `main`), fleet drift view (which Layer revision each repo last pulled), Layer-level deny rules.
-- **Authorization**: any signed-in user can read and write any repository. Next:
-  Amazon Verified Permissions (Cedar) with repo and path-level policies.
+- **Permissions**: repository-level today. Next: path-level rules (the changed paths
+  of a push in the Cedar context) and a Cedar schema to validate policies.
 - **Git bridge**, **semantic search**, **KMS per-object keys**, **Object Lock retention**.

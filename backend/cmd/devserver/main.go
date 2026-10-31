@@ -26,7 +26,7 @@ func main() {
 	mux.Handle("/_objects/", mem.UploadHandler())
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.Header.Get("authorization"), "Bearer ")
-		h.ServeHTTP(w, r.WithContext(api.WithIdentity(r.Context(), id)))
+		h.ServeHTTP(w, r.WithContext(api.WithPrincipal(r.Context(), api.ParseDevToken(id))))
 	}))
 	cors := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("access-control-allow-origin", "*")

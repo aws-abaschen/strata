@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
+
+	"github.com/aws-abaschen/strata/backend/internal/authz"
 )
 
 // LambdaHandler adapts the API to an API Gateway HTTP API (payload v2) event.
@@ -27,7 +29,7 @@ func (a *API) LambdaHandler() func(context.Context, events.APIGatewayV2HTTPReque
 		if ev.RawQueryString != "" {
 			target += "?" + ev.RawQueryString
 		}
-		req := httptest.NewRequestWithContext(WithIdentity(ctx, claimIdentity(ev)), ev.RequestContext.HTTP.Method, target, strings.NewReader(body))
+		req := httptest.NewRequestWithContext(WithPrincipal(ctx, claimPrincipal(ev)), ev.RequestContext.HTTP.Method, target, strings.NewReader(body))
 		for k, v := range ev.Headers {
 			req.Header.Set(k, v)
 		}
@@ -53,4 +55,18 @@ func claimIdentity(ev events.APIGatewayV2HTTPRequest) string {
 		}
 	}
 	return ""
+}
+
+// claimPrincipal adds the caller's groups (cognito:groups) to its identity.
+// HTTP API passes array claims as a string such as "[admins payments]".
+func claimPrincipal(ev events.APIGatewayV2HTTPRequest) authz.Principal {
+	p := authz.Principal{ID: claimIdentity(ev)}
+	if p.ID == "" {
+		return p
+	}
+	raw := strings.Trim(ev.RequestContext.Authorizer.JWT.Claims["cognito:groups"], "[]")
+	for _, g := range strings.FieldsFunc(raw, func(r rune) bool { return r == ' ' || r == ',' }) {
+		p.Groups = append(p.Groups, strings.Trim(g, `"`))
+	}
+	return p
 }

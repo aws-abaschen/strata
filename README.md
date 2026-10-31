@@ -23,7 +23,8 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Web console: repos, history, change detail, file browser, annotate, search | done |
 | Layers: org → business unit → team → repo cascade with locked, override and append files | done |
 | Audit ledger: hash-chained record of every write, archived under S3 Object Lock, `strata audit --verify`; events published from the ledger (never lost) | done |
-| Merges, wave rollouts, policy-as-code, Git bridge | next |
+| Policy-as-code permissions: Cedar policies versioned in a Strata repo, groups from Cognito, Layer-aware (`resource in Repo::"payments-rules"`) | done |
+| Merges, wave rollouts, Git bridge | next |
 
 ## Layout
 

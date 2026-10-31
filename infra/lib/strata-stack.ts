@@ -34,6 +34,8 @@ export interface StrataStackProps extends StackProps {
    * including the root user, until retention ends: use it in production only.
    */
   auditLockMode?: 'governance' | 'compliance'
+  /** Repository holding the Cedar policies. Default strata-policies. */
+  policyRepo?: string
 }
 
 /**
@@ -129,6 +131,12 @@ export class StrataStack extends Stack {
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       removalPolicy: RemovalPolicy.RETAIN,
     })
+    // Break-glass group: always allowed unless a policy explicitly forbids.
+    new cognito.CfnUserPoolGroup(this, 'AdminsGroup', {
+      userPoolId: users.userPoolId,
+      groupName: 'strata-admins',
+      description: 'Strata break-glass administrators',
+    })
     const domain = users.addDomain('Domain', {
       cognitoDomain: { domainPrefix: props.authDomainPrefix || `strata-${this.account}` },
     })
@@ -167,6 +175,7 @@ export class StrataStack extends Stack {
         BUCKET_NAME: data.bucketName,
         TABLE_NAME: table.tableName,
         WEB_URL: webUrl,
+        POLICY_REPO: props.policyRepo ?? 'strata-policies',
       },
     })
     // PutObject is needed to sign upload URLs; clients then upload directly.

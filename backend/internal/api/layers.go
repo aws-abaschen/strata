@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/aws-abaschen/strata/backend/internal/authz"
 	"github.com/aws-abaschen/strata/backend/internal/core"
 	"github.com/aws-abaschen/strata/backend/internal/layers"
 	"github.com/aws-abaschen/strata/backend/internal/store"
@@ -62,7 +63,7 @@ func (a *API) checkLocked(ctx context.Context, rp core.Repo, tree core.Hash) err
 // extends: PUT /repos/{repo}/settings {"extends": {"layer","ref"} | null}.
 func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Admin)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -134,7 +135,7 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 // files, so tools and AI agents can read their rules in one call.
 func (a *API) effectiveLayers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -192,7 +193,7 @@ type Subscriber struct {
 // or through other Layers: GET /repos/{repo}/subscribers.
 func (a *API) subscribers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return

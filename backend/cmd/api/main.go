@@ -25,10 +25,11 @@ func main() {
 	// Only add checksums S3 requires; presigned URLs carry their own SHA-256.
 	s3c := s3.NewFromConfig(cfg, func(o *s3.Options) { o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired })
 	a := &api.API{
-		Objects: &store.S3{Client: s3c, Presign: s3.NewPresignClient(s3c), Bucket: os.Getenv("BUCKET_NAME")},
-		Meta:    &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME")},
-		WebURL:  os.Getenv("WEB_URL"),
-		Log:     slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		Objects:    &store.S3{Client: s3c, Presign: s3.NewPresignClient(s3c), Bucket: os.Getenv("BUCKET_NAME")},
+		Meta:       &store.Dynamo{Client: dynamodb.NewFromConfig(cfg), Table: os.Getenv("TABLE_NAME")},
+		WebURL:     os.Getenv("WEB_URL"),
+		PolicyRepo: os.Getenv("POLICY_REPO"),
+		Log:        slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 	}
 	lambda.Start(a.LambdaHandler())
 }

@@ -170,7 +170,7 @@ func run(ctx context.Context, args []string, env Env) error {
 	}
 
 	st, root, err := LoadState(env.Dir)
-	if err != nil {
+	if err != nil && cmd != "find" { // search works from anywhere
 		return err
 	}
 	c, err := env.client(firstNonEmpty(*api, st.API))

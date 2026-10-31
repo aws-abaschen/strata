@@ -40,3 +40,16 @@ func TestLambdaAdapter(t *testing.T) {
 		t.Fatalf("no JWT: want 401, got %d", res.StatusCode)
 	}
 }
+
+func TestClaimPrincipalGroups(t *testing.T) {
+	ev := events.APIGatewayV2HTTPRequest{}
+	ev.RequestContext.Authorizer = &events.APIGatewayV2HTTPRequestContextAuthorizerDescription{
+		JWT: &events.APIGatewayV2HTTPRequestContextAuthorizerJWTDescription{Claims: map[string]string{
+			"email": "ana@example.com", "cognito:groups": "[strata-admins payments-devs]",
+		}},
+	}
+	p := claimPrincipal(ev)
+	if p.ID != "ana@example.com" || len(p.Groups) != 2 || p.Groups[1] != "payments-devs" {
+		t.Fatalf("%+v", p)
+	}
+}

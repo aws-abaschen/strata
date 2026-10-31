@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/aws-abaschen/strata/backend/internal/authz"
 	"github.com/aws-abaschen/strata/backend/internal/core"
 )
 
@@ -14,7 +15,7 @@ const maxAuditPage = 500
 // still verify independently (strata audit --verify).
 func (a *API) auditLog(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rp, err := a.repo(r)
+	rp, err := a.repoFor(r, authz.Read)
 	if err != nil {
 		a.fail(w, r, err)
 		return
