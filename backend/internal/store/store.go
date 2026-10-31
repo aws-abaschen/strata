@@ -82,6 +82,22 @@ type Meta interface {
 	PutApproval(ctx context.Context, a core.Approval, audit core.AuditEntry) error
 	ListApprovals(ctx context.Context, repo string, rev core.Hash) ([]core.Approval, error)
 
+	// PutGrant stores a new break-glass grant, audited on core.BreakGlassChain.
+	// ErrExists if the user already holds a grant active at g.CreatedAt.
+	PutGrant(ctx context.Context, g core.Grant, audit core.AuditEntry) error
+	// ActiveGrant returns the user's latest grant (ErrNotFound if none). The
+	// caller checks it is still active.
+	ActiveGrant(ctx context.Context, user string) (core.Grant, error)
+	GetGrant(ctx context.Context, id string) (core.Grant, error)
+	// ListGrants returns grants, newest first (all of them if limit is 0).
+	ListGrants(ctx context.Context, limit int) ([]core.Grant, error)
+	// EndGrant stores g (with EndedAt set) if it had not ended (ErrConflict).
+	EndGrant(ctx context.Context, g core.Grant, audit core.AuditEntry) error
+	// ReviewGrant stores g (with Review set) if it was unreviewed (ErrConflict).
+	ReviewGrant(ctx context.Context, g core.Grant, audit core.AuditEntry) error
+	// ListGrantActivity returns the audit records written under a grant.
+	ListGrantActivity(ctx context.Context, id string, limit int) ([]core.AuditRecord, error)
+
 	// FindByWorkItem and FindByLabel search across all repositories, newest first.
 	FindByWorkItem(ctx context.Context, system, key string, limit int) ([]core.ChangeSummary, error)
 	FindByLabel(ctx context.Context, label string, limit int) ([]core.ChangeSummary, error)

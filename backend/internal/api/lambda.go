@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 
@@ -63,6 +65,9 @@ func claimPrincipal(ev events.APIGatewayV2HTTPRequest) authz.Principal {
 	p := authz.Principal{ID: claimIdentity(ev)}
 	if p.ID == "" {
 		return p
+	}
+	if sec, err := strconv.ParseInt(ev.RequestContext.Authorizer.JWT.Claims["auth_time"], 10, 64); err == nil {
+		p.AuthTime = time.Unix(sec, 0).UTC()
 	}
 	raw := strings.Trim(ev.RequestContext.Authorizer.JWT.Claims["cognito:groups"], "[]")
 	for _, g := range strings.FieldsFunc(raw, func(r rune) bool { return r == ' ' || r == ',' }) {

@@ -339,6 +339,7 @@ type Me struct {
 	Identity      string   `json:"identity"`
 	Groups        []string `json:"groups"`
 	Authorization string   `json:"authorization"`
+	BreakGlass    *Grant   `json:"breakGlass"` // the caller's active grant
 }
 
 // Me asks who the server thinks the caller is, and how requests are authorized.

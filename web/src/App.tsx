@@ -1,6 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Link, NavLink, Route, Routes, useNavigate } from 'react-router'
-import { useAuth } from './auth'
+import { useApi, useAuth } from './auth'
 import { CopyButton, ErrorBox, Loading } from './components'
 import { ChangePage } from './pages/Change'
 import { FilesPage } from './pages/Files'
@@ -54,6 +55,7 @@ function Shell() {
           </button>
         </div>
       </header>
+      <BreakGlassBanner />
       <main className="page">
         <Routes>
           <Route path="/" element={<Repos />} />
@@ -65,6 +67,21 @@ function Shell() {
         </Routes>
       </main>
     </>
+  )
+}
+
+// Shown while the user holds a break-glass grant, so nobody forgets it is on.
+function BreakGlassBanner() {
+  const api = useApi()
+  const q = useQuery({ queryKey: ['me'], queryFn: () => api.me(), refetchInterval: 60_000 })
+  const g = q.data?.breakGlass
+  if (!g) return null
+  return (
+    <p className="notice breakglass" role="alert">
+      Break-glass <span className="mono">{g.id}</span> is active until {new Date(g.expiresAt).toLocaleTimeString()} on{' '}
+      {g.repos.join(', ')} ({g.workItem.system}:{g.workItem.key}). Everything you do is tagged and reviewed by another admin. End it
+      with <span className="mono">strata breakglass end</span>.
+    </p>
   )
 }
 

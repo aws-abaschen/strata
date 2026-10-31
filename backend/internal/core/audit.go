@@ -15,6 +15,10 @@ type AuditEntry struct {
 	Actor  string          // verified identity
 	At     time.Time       // server time
 	Detail json.RawMessage // the event payload
+	// BreakGlass is the grant that let this write through, if any. It is also
+	// in Detail (so it is hashed); here it lets the store index the record
+	// under the grant in the same transaction.
+	BreakGlass string
 }
 
 // NewAuditEntry builds an entry from any JSON-serializable detail.

@@ -25,6 +25,7 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Audit ledger: hash-chained record of every write, archived under S3 Object Lock, `strata audit --verify`; events published from the ledger (never lost) | done |
 | Policy-as-code permissions: Cedar policies versioned in a Strata repo, groups from Cognito, Layer-aware (`resource in Repo::"payments-rules"`) | done |
 | Four-eyes approvals and protected refs: approvals bound to a revision, authors never count, ref-move facts in the Cedar context, approvers recorded in the ledger | done |
+| Break-glass: no standing admin access; time-boxed grants (ticket, scope, max 4h, fresh MFA), enforced outside Cedar so no policy can lock everyone out, every use tagged in the ledger, reviewed by another admin, alerted, overdue reviews alarmed | done |
 | `strata pull`: three-way merge of your edits with the server's latest (line-level for text, conflict markers, push blocked until resolved) | done |
 | Branch merges in the web console, wave rollouts, Git bridge | next |
 
@@ -90,6 +91,21 @@ strata layers fleet org-rules                       # who inherits from org-rule
 ```
 
 See [docs/architecture.md](docs/architecture.md#layers-top-down-configuration).
+
+### Break-glass
+
+Once policies exist, `strata-admins` have no standing access. In an emergency:
+
+```sh
+strata breakglass start --reason "payments down" --work-item INC-42 --repo payments --for 1h
+strata push -m "INC-42 hotfix"
+strata breakglass end
+# later, another admin:
+strata breakglass list --open
+strata breakglass review bg-... --outcome accepted --note "diff matches INC-42"
+```
+
+See [docs/architecture.md](docs/architecture.md#break-glass-time-boxed-and-reviewed).
 
 ### Jira
 

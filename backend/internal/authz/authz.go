@@ -10,9 +10,12 @@
 //	                    every repo inheriting from payments-rules
 //	Action::"read" | "write" | "annotate" | "admin" | "create"
 //
-// Until the policy repository has a change on main, every signed-in user is
-// allowed (bootstrap). Members of Group::"strata-admins" are always allowed
-// unless a policy explicitly forbids it (break-glass).
+// Until the policy repository has a change on main, only members of
+// Group::"strata-admins" are allowed, so they can install the first policies
+// (every signed-in user with OpenBootstrap, dev and tests only). Once
+// policies exist, administrators have no standing access: they activate a
+// time-boxed break-glass grant (see Grant), which overrides a deny in code,
+// not in Cedar, so no policy (however broken) can lock everyone out.
 package authz
 
 import (
@@ -20,9 +23,11 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cedar-policy/cedar-go"
 
@@ -40,6 +45,9 @@ const (
 	Admin    Action = "admin"    // change settings (the Layer it extends)
 	Create   Action = "create"   // create the repository
 	Approve  Action = "approve"  // sign off on a change (never one's own)
+	// Audit reads the break-glass grants and their ledger, on the resource
+	// Repo::"_breakglass" (administrators always may).
+	Audit Action = "audit"
 )
 
 // DefaultPolicyRepo holds the policies unless configured otherwise.
@@ -49,17 +57,23 @@ const DefaultPolicyRepo = "strata-policies"
 const AdminGroup = "strata-admins"
 
 const (
-	bootstrapPolicy  = `permit (principal, action, resource);`
-	breakGlassPolicy = `permit (principal in Group::"strata-admins", action, resource);`
-	maxPolicyBytes   = 1 << 20
-	maxPolicyFiles   = 200
+	bootstrapPolicy      = `permit (principal, action, resource);`
+	adminBootstrapPolicy = `permit (principal in Group::"strata-admins", action, resource);`
+	maxPolicyBytes       = 1 << 20
+	maxPolicyFiles       = 200
 )
 
 // Principal is the caller.
 type Principal struct {
 	ID     string
 	Groups []string
+	// AuthTime is when the caller last signed in (the token's auth_time), zero
+	// if unknown.
+	AuthTime time.Time
 }
+
+// IsAdmin reports whether the caller is in AdminGroup.
+func (p Principal) IsAdmin() bool { return slices.Contains(p.Groups, AdminGroup) }
 
 // Authorizer evaluates requests. It caches the policy set per revision of
 // the policy repository's main.
@@ -72,6 +86,7 @@ type Authorizer struct {
 	// exist, only members of strata-admins are allowed. Only the dev server
 	// and tests turn it on; it is deliberately not read from the environment.
 	OpenBootstrap bool
+	Now           func() time.Time
 
 	mu        sync.Mutex
 	cachedRev core.Hash
@@ -208,7 +223,9 @@ func (a *Authorizer) Policies(ctx context.Context) (*cedar.PolicySet, core.Hash,
 			return nil, "", err
 		}
 	}
-	builtin(ps, "break-glass", breakGlassPolicy)
+	if rev == "" {
+		builtin(ps, "admin-bootstrap", adminBootstrapPolicy)
+	}
 	a.mu.Lock()
 	a.cached, a.cachedRev = ps, rev
 	a.mu.Unlock()
@@ -267,6 +284,8 @@ type Decision struct {
 	Allowed bool
 	// Policies that determined the outcome (permits, or forbids on a deny).
 	Policies []string
+	// BreakGlass is the grant that allowed a request policy denied.
+	BreakGlass string
 }
 
 // Facts are what the server computed about a ref move, exposed to policies
@@ -314,12 +333,103 @@ func (a *Authorizer) CheckWith(ctx context.Context, p Principal, action Action, 
 		for _, e := range diag.Errors {
 			d.Policies = append(d.Policies, string(e.PolicyID)+" (evaluation error)")
 		}
+	} else {
+		for _, r := range diag.Reasons {
+			d.Policies = append(d.Policies, string(r.PolicyID))
+		}
+	}
+	if d.Allowed {
 		return d, nil
 	}
-	for _, r := range diag.Reasons {
-		d.Policies = append(d.Policies, string(r.PolicyID))
+	// Looked up only after a deny, so a grant tags exactly the requests it
+	// let through.
+	g, err := a.grantFor(ctx, p, repo.Name)
+	if err != nil || g == nil {
+		return d, err
 	}
-	return d, nil
+	if t := TraceFrom(ctx); t != nil {
+		t.mu.Lock()
+		t.used = g.ID
+		t.mu.Unlock()
+	}
+	return Decision{Allowed: true, Policies: []string{"break-glass:" + g.ID}, BreakGlass: g.ID}, nil
+}
+
+func (a *Authorizer) now() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
+}
+
+// ActiveGrant returns the caller's grant in force now, or nil. Group
+// membership is checked on every request, so leaving strata-admins ends the
+// grant's effect at once.
+func (a *Authorizer) ActiveGrant(ctx context.Context, p Principal) (*core.Grant, error) {
+	if !p.IsAdmin() {
+		return nil, nil
+	}
+	t := TraceFrom(ctx)
+	if t != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.loaded {
+			return t.grant, nil
+		}
+	}
+	var out *core.Grant
+	g, err := a.Meta.ActiveGrant(ctx, p.ID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		return nil, err
+	case g.User == p.ID && g.ActiveAt(a.now()):
+		out = &g
+	}
+	if t != nil {
+		t.loaded, t.grant = true, out
+	}
+	return out, nil
+}
+
+func (a *Authorizer) grantFor(ctx context.Context, p Principal, repo string) (*core.Grant, error) {
+	g, err := a.ActiveGrant(ctx, p)
+	if err != nil || g == nil || !g.Covers(repo) {
+		return nil, err
+	}
+	return g, nil
+}
+
+type traceKey struct{}
+
+// Trace collects, per request, what authorization used: the grant lookup
+// (done once) and the grant id if one let a request through.
+type Trace struct {
+	mu     sync.Mutex
+	loaded bool
+	grant  *core.Grant
+	used   string
+}
+
+// WithTrace returns a context carrying a fresh Trace.
+func WithTrace(ctx context.Context) context.Context {
+	return context.WithValue(ctx, traceKey{}, &Trace{})
+}
+
+// TraceFrom returns the request's Trace, or nil.
+func TraceFrom(ctx context.Context) *Trace {
+	t, _ := ctx.Value(traceKey{}).(*Trace)
+	return t
+}
+
+// BreakGlass returns the grant id that let a request through, or "".
+func (t *Trace) BreakGlass() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.used
 }
 
 // Require returns a core.ErrPolicy error unless the request is allowed.

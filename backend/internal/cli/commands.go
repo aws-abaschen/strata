@@ -33,6 +33,11 @@ Usage:
   strata find --work-item KEY | --label LABEL   search every repository
   strata audit [-n 20] [--verify]               the ledger, hash chain verified here
 
+Break-glass (strata-admins; time-boxed, reviewed afterwards by another admin):
+  strata breakglass start --reason TEXT --work-item INC-1 --repo NAME [--for 1h]
+  strata breakglass end | list [--open] | show ID | audit [--verify]
+  strata breakglass review ID --outcome accepted|rejected --note TEXT
+
 Layers (configuration inherited top-down):
   strata repo create NAME --layer               a Layer repository
   strata repo create NAME --extends LAYER[@REF] a repository inheriting a Layer
@@ -136,6 +141,8 @@ func run(ctx context.Context, args []string, env Env) error {
 	switch cmd {
 	case "repo":
 		return repoCmd(ctx, args, env)
+	case "breakglass":
+		return breakglassCmd(ctx, args, env)
 	case "init":
 		repo := fs.String("repo", "", "repository name")
 		ref := fs.String("ref", "main", "ref to push to")

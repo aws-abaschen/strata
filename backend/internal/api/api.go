@@ -41,8 +41,12 @@ type API struct {
 	PolicyRepo string
 	// OpenBootstrap allows everyone until policies exist: dev server and tests only.
 	OpenBootstrap bool
-	Now           func() time.Time
-	Log           *slog.Logger
+	// RequireFreshAuth makes break-glass activation require a sign-in (with
+	// MFA) in the last 15 minutes. The Lambda turns it on; dev tokens carry
+	// no sign-in time.
+	RequireFreshAuth bool
+	Now              func() time.Time
+	Log              *slog.Logger
 
 	layers *layers.Resolver
 	authz  *authz.Authorizer
@@ -97,7 +101,7 @@ func (a *API) log() *slog.Logger {
 // Handler returns the routed API.
 func (a *API) Handler() http.Handler {
 	a.layers = &layers.Resolver{Meta: a.Meta, Objects: a.Objects}
-	a.authz = &authz.Authorizer{Meta: a.Meta, Objects: a.Objects, PolicyRepo: a.PolicyRepo, OpenBootstrap: a.OpenBootstrap}
+	a.authz = &authz.Authorizer{Meta: a.Meta, Objects: a.Objects, PolicyRepo: a.PolicyRepo, OpenBootstrap: a.OpenBootstrap, Now: a.now}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /me", a.me)
 	mux.HandleFunc("GET /repos", a.listRepos)
@@ -120,12 +124,18 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /repos/{repo}/layers", a.effectiveLayers)
 	mux.HandleFunc("GET /repos/{repo}/subscribers", a.subscribers)
 	mux.HandleFunc("GET /repos/{repo}/audit", a.auditLog)
+	mux.HandleFunc("POST /break-glass", a.activateGrant)
+	mux.HandleFunc("GET /break-glass", a.listGrants)
+	mux.HandleFunc("GET /break-glass/ledger", a.grantLedger)
+	mux.HandleFunc("GET /break-glass/{id}", a.getGrant)
+	mux.HandleFunc("POST /break-glass/{id}/end", a.endGrant)
+	mux.HandleFunc("POST /break-glass/{id}/review", a.reviewGrant)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if identity(r) == "" {
 			writeJSON(w, http.StatusUnauthorized, errBody{"unauthenticated"})
 			return
 		}
-		mux.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r.WithContext(authz.WithTrace(r.Context())))
 	})
 }
 
@@ -243,8 +253,26 @@ func hashParam(r *http.Request, name string) (core.Hash, error) {
 // also the event outbox: the ledger Lambda publishes each record's detail
 // to EventBridge with the action as detail-type, so integrations get every
 // write exactly when it commits.
+//
+// A write that a break-glass grant let through carries the grant id in its
+// detail ("breakGlass"), and the store indexes it under the grant.
 func (a *API) audit(r *http.Request, action string, detail any) (core.AuditEntry, error) {
-	return core.NewAuditEntry(action, identity(r), a.now(), detail)
+	e, err := core.NewAuditEntry(action, identity(r), a.now(), detail)
+	if err != nil {
+		return e, err
+	}
+	if id := authz.TraceFrom(r.Context()).BreakGlass(); id != "" {
+		var m map[string]any
+		if err := json.Unmarshal(e.Detail, &m); err != nil || m == nil {
+			m = map[string]any{"detail": json.RawMessage(e.Detail)}
+		}
+		m["breakGlass"] = id
+		if e.Detail, err = json.Marshal(m); err != nil {
+			return e, err
+		}
+		e.BreakGlass = id
+	}
+	return e, nil
 }
 
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +281,16 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"identity": identity(r), "groups": principal(r).Groups, "authorization": mode})
+	out := map[string]any{"identity": identity(r), "groups": principal(r).Groups, "authorization": mode}
+	g, err := a.authz.ActiveGrant(r.Context(), principal(r))
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	if g != nil {
+		out["breakGlass"] = g
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *API) listRepos(w http.ResponseWriter, r *http.Request) {

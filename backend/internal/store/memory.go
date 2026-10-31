@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,8 +29,12 @@ type Memory struct {
 	pointers    map[string]core.Hash
 	annotations map[string][]core.Annotation
 	approvals   map[string][]core.Approval
-	index       map[string][]core.ChangeSummary
-	audits      map[string][]core.AuditRecord
+	grants      map[string]core.Grant
+	activeGrant map[string]string // user -> latest grant id
+	// grantActivity indexes audit records written under a grant.
+	grantActivity map[string][]core.AuditRecord
+	index         map[string][]core.ChangeSummary
+	audits        map[string][]core.AuditRecord
 
 	// OnAudit, if set, sees each audit record as it is written, like the
 	// DynamoDB stream does in AWS. It must not call the store.
@@ -41,7 +46,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		objects: map[string][]byte{}, changeDocs: map[string][]byte{}, repos: map[string]core.Repo{},
 		refs: map[string]map[string]core.Ref{}, changes: map[string]core.Change{}, pointers: map[string]core.Hash{},
-		annotations: map[string][]core.Annotation{}, approvals: map[string][]core.Approval{}, index: map[string][]core.ChangeSummary{}, audits: map[string][]core.AuditRecord{},
+		annotations: map[string][]core.Annotation{}, approvals: map[string][]core.Approval{}, grants: map[string]core.Grant{}, activeGrant: map[string]string{}, grantActivity: map[string][]core.AuditRecord{}, index: map[string][]core.ChangeSummary{}, audits: map[string][]core.AuditRecord{},
 	}
 }
 
@@ -154,6 +159,12 @@ func (m *Memory) prepareAudit(repo string, e core.AuditEntry) (core.AuditRecord,
 
 func (m *Memory) commitAudit(r core.AuditRecord) {
 	m.audits[r.Repo] = append(m.audits[r.Repo], r)
+	var tag struct {
+		BreakGlass string `json:"breakGlass"`
+	}
+	if json.Unmarshal(r.Detail, &tag) == nil && tag.BreakGlass != "" {
+		m.grantActivity[tag.BreakGlass] = append(m.grantActivity[tag.BreakGlass], r)
+	}
 	if m.OnAudit != nil {
 		m.OnAudit(r)
 	}
@@ -428,4 +439,98 @@ func (m *Memory) FindByWorkItem(_ context.Context, system, key string, limit int
 // FindByLabel implements Meta.
 func (m *Memory) FindByLabel(_ context.Context, label string, limit int) ([]core.ChangeSummary, error) {
 	return m.find("l:"+label, limit), nil
+}
+
+// PutGrant implements Meta.
+func (m *Memory) PutGrant(_ context.Context, g core.Grant, audit core.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id, ok := m.activeGrant[g.User]; ok && m.grants[id].ActiveAt(g.CreatedAt) {
+		return ErrExists
+	}
+	rec, err := m.prepareAudit(core.BreakGlassChain, audit)
+	if err != nil {
+		return err
+	}
+	m.grants[g.ID] = g
+	m.activeGrant[g.User] = g.ID
+	m.commitAudit(rec)
+	return nil
+}
+
+// ActiveGrant implements Meta.
+func (m *Memory) ActiveGrant(_ context.Context, user string) (core.Grant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.activeGrant[user]
+	if !ok {
+		return core.Grant{}, ErrNotFound
+	}
+	return m.grants[id], nil
+}
+
+// GetGrant implements Meta.
+func (m *Memory) GetGrant(_ context.Context, id string) (core.Grant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g, ok := m.grants[id]
+	if !ok {
+		return core.Grant{}, ErrNotFound
+	}
+	return g, nil
+}
+
+// ListGrants implements Meta.
+func (m *Memory) ListGrants(_ context.Context, limit int) ([]core.Grant, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]core.Grant, 0, len(m.grants))
+	for _, g := range m.grants {
+		out = append(out, g)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *Memory) updateGrant(g core.Grant, audit core.AuditEntry, unchanged func(old core.Grant) bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	old, ok := m.grants[g.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	if !unchanged(old) {
+		return ErrConflict
+	}
+	rec, err := m.prepareAudit(core.BreakGlassChain, audit)
+	if err != nil {
+		return err
+	}
+	m.grants[g.ID] = g
+	m.commitAudit(rec)
+	return nil
+}
+
+// EndGrant implements Meta.
+func (m *Memory) EndGrant(_ context.Context, g core.Grant, audit core.AuditEntry) error {
+	return m.updateGrant(g, audit, func(old core.Grant) bool { return old.EndedAt == nil })
+}
+
+// ReviewGrant implements Meta.
+func (m *Memory) ReviewGrant(_ context.Context, g core.Grant, audit core.AuditEntry) error {
+	return m.updateGrant(g, audit, func(old core.Grant) bool { return old.Review == nil })
+}
+
+// ListGrantActivity implements Meta.
+func (m *Memory) ListGrantActivity(_ context.Context, id string, limit int) ([]core.AuditRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := append([]core.AuditRecord{}, m.grantActivity[id]...)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }

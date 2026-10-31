@@ -94,6 +94,25 @@ export interface Annotation {
   metadata: Metadata
 }
 
+/** A time-boxed break-glass grant: its holder may do what policy denies, on its repos. */
+export interface Grant {
+  id: string
+  user: string
+  reason: string
+  workItem: WorkItem
+  repos: string[]
+  createdAt: string
+  expiresAt: string
+  active: boolean
+}
+
+export interface Me {
+  identity: string
+  groups?: string[]
+  authorization: string
+  breakGlass?: Grant
+}
+
 export interface Approval {
   repo: string
   revision: Hash
@@ -171,7 +190,7 @@ export class Api {
     return (await res.json()) as T
   }
 
-  me = () => this.call<{ identity: string }>('GET', '/me')
+  me = () => this.call<Me>('GET', '/me')
   repos = () => this.call<{ repos: Repo[] }>('GET', '/repos').then((r) => r.repos)
   createRepo = (name: string, description: string, kind: Repo['kind'] = 'code', ext?: LayerRef) =>
     this.call<Repo>('POST', '/repos', { name, description, kind, extends: ext })

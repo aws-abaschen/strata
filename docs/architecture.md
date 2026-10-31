@@ -163,7 +163,7 @@ tickets like any change. They apply as soon as that repo's `main` moves.
 | --- | --- |
 | `User::"<email>"` | from the verified JWT; parents: `Group::"<g>"` for each `cognito:groups` value |
 | `Repo::"<name>"` | attributes `name`, `kind`; parent: the Layer it extends, so `resource in Repo::"payments-rules"` matches every repo inheriting from it |
-| `Action::"read" \| "write" \| "annotate" \| "admin" \| "create"` | read: clone, log, browse, layers, audit · write: push, move refs · annotate: link work items, labels, notes · admin: settings · create: new repo |
+| `Action::"read" \| "write" \| "annotate" \| "admin" \| "create" \| "approve" \| "audit"` | read: clone, log, browse, layers, audit · write: push, move refs · annotate: link work items, labels, notes · admin: settings · create: new repo · approve: sign off a change · audit: see break-glass grants (on `Repo::"_breakglass"`) |
 
 - A repo the caller may not read answers `404`, and is left out of listings and
   work-item or label searches. Other denials answer `403` with the deciding policy ids
@@ -175,10 +175,12 @@ tickets like any change. They apply as soon as that repo's `main` moves.
   field set by the dev server and tests, never read from the Lambda environment.
   If loading the policies fails, requests are denied, never allowed.
 - `main` of the policy repository cannot be deleted (that would reopen bootstrap).
-- Break-glass: `Group::"strata-admins"` (created in Cognito by the stack) is always
-  allowed unless a `forbid` matches. Recovery from a lock-out is at AWS level:
-  `aws cognito-idp admin-add-user-to-group --user-pool-id <pool> --username <user> --group-name strata-admins`
-  (IAM-gated and recorded in CloudTrail).
+- No standing admin access: once policies exist, `Group::"strata-admins"` (created in
+  Cognito by the stack) gets only what policies grant, like anyone. Emergency access is
+  a time-boxed [break-glass grant](#break-glass-time-boxed-and-reviewed). Membership of
+  `strata-admins` is managed at AWS level
+  (`aws cognito-idp admin-add-user-to-group ... --group-name strata-admins`, IAM-gated
+  and recorded in CloudTrail).
 - A push (or ref move) that would install policies that do not parse is rejected, so a
   typo cannot lock everyone out.
 - Reading inherited Layer files needs `read` on the Layer repositories.
@@ -217,6 +219,46 @@ a `forbid` in `strata-policies` guards `main` and, because forbids bind
 Example: [policies/four-eyes.cedar](policies/four-eyes.cedar). Mind that protecting the
 policy repository this way means a second person is needed to change policies.
 
+### Break-glass: time-boxed and reviewed
+
+Administrators have no standing access. In an emergency one activates a grant; another
+administrator reviews it afterwards. DORA Art. 9 (privileged access) and the usual
+emergency-change control: the path always works, and every use leaves evidence.
+
+```sh
+strata breakglass start --reason "payments down, hotfix" --work-item INC-42 --repo payments --for 1h
+strata push -m "INC-42 hotfix"        # allowed although policy (e.g. four-eyes) denies it
+strata breakglass end                 # or let it expire
+strata breakglass show bg-...         # another admin sees everything done under it
+strata breakglass review bg-... --outcome accepted --note "diff matches INC-42"
+```
+
+- **Outside Cedar, on purpose.** Activation needs `strata-admins` membership from the
+  token, checked in code. While a grant is active, a request on a listed repository that
+  Cedar denies is allowed in code, forbids included. So no policy, however broken or
+  hostile, can remove the emergency path: a policy push that forbids everything is fixed
+  under a grant (tested).
+- **Bounded:** a reason, an incident or emergency-change ticket and an explicit list of
+  repositories (`*` allowed, flagged in the record) are required. Default 1 hour, at
+  most 4. One active grant per person. Expiry is checked on the server clock on every
+  request; leaving `strata-admins` ends its effect at once. In AWS, activating needs a
+  sign-in (with MFA) in the last 15 minutes, read from the token's `auth_time`.
+- **Evidence:** `BreakGlassActivated`, `BreakGlassEnded` and `BreakGlassReviewed` are
+  records of a dedicated hash chain, `_breakglass`, archived under Object Lock like
+  every ledger (`strata breakglass audit --verify`). Each write let through by a grant
+  carries `"breakGlass": "<grant id>"` in its own repository's record and is indexed
+  under the grant in the same transaction, so a review lists exactly what was done.
+- **Review:** by another member of `strata-admins`, never the holder, once the grant is
+  over: `accepted` or `rejected` with a note. A rejection is recorded and alerted; it
+  does not roll anything back.
+- **Alerts:** every activation, early end and review goes to the alarm topic. An hourly
+  sweeper Lambda publishes `Strata/BreakGlassOverdueReviews` (grants unreviewed 24 hours
+  after they ended) and `Strata/BreakGlassActive`; an alarm fires on any overdue review.
+- **Who sees grants:** `strata-admins`, and whoever policy allows `audit` on
+  `Repo::"_breakglass"` (for example `Group::"auditors"`).
+- **Bootstrap** is unchanged: until `strata-policies` has a `main`, `strata-admins` may
+  do everything, so they can install the first policies.
+
 ## Security and operations baseline
 
 - **Encryption:** customer-managed KMS keys with yearly rotation, one each for the data
@@ -227,8 +269,9 @@ policy repository this way means a second person is needed to change policies.
   feeds Cedar groups.
 - **Alarms** (SNS topic `AlarmTopic`, optional email via `-c alarmEmail=...`):
   ledger more than 5 minutes behind the table stream, ledger errors, any message in the
-  ledger or tracker dead-letter queue, and CloudTrail events that change or delete the
-  ledger function or its stream mapping (an attempt to switch the evidence off).
+  ledger or tracker dead-letter queue, CloudTrail events that change or delete the
+  ledger function or its stream mapping (an attempt to switch the evidence off), every
+  break-glass activation, end and review, and break-glass reviews overdue.
 - **Verified against real AWS:** `go test -tags aws ./internal/integration/` runs the
   CLI and API against a deployed stack (presigned uploads, transactions, ledger archive
   under Object Lock). The in-memory store accepts transaction shapes DynamoDB rejects, so

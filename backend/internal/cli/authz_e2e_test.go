@@ -58,8 +58,13 @@ func TestPolicyAsCode(t *testing.T) {
 	if out, code := h.run(cards, eve, "layers", "unset"); code == 0 || !strings.Contains(out, "may not admin cards") {
 		t.Fatalf("eve detaching cards: %d\n%s", code, out)
 	}
-	// Break-glass: strata-admins may write anywhere.
+	// Admins have no standing access: an emergency fix needs a grant.
+	if out, code := h.run(cards, root, "push", "-m", "OPS-1 emergency fix"); code == 0 || !strings.Contains(out, "may not write cards") {
+		t.Fatalf("admin without a grant: %d\n%s", code, out)
+	}
+	h.ok(cards, root, "breakglass", "start", "--reason", "cards outage, hotfix", "--work-item", "INC-1", "--repo", "cards", "--for", "30m")
 	h.ok(cards, root, "push", "-m", "OPS-1 emergency fix")
+	h.ok(cards, root, "breakglass", "end")
 
 	// hsm-keys is invisible to everyone outside the crypto team.
 	h.ok(t.TempDir(), kim, "repo", "create", "hsm-keys")

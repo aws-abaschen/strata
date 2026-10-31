@@ -463,3 +463,9 @@ textarea:focus {
 .field select {
   flex: none;
 }
+
+.notice.breakglass {
+  margin: 0;
+  border-radius: 0;
+  text-align: center;
+}

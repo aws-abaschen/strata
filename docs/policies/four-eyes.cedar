@@ -1,6 +1,7 @@
 // Four-eyes on main: a ref move needs one approval from someone who did not
 // write any change in the range, a linked work item, and must be a
-// fast-forward (no rollback, no delete). `forbid` also binds strata-admins.
+// fast-forward (no rollback, no delete). `forbid` also binds strata-admins;
+// only a time-boxed break-glass grant (strata breakglass start) overrides it.
 //
 // The server computes the context for every write that moves a ref:
 //   context.ref          name of the ref being moved ("" if none)

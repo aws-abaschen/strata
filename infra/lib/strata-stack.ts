@@ -324,6 +324,33 @@ export class StrataStack extends Stack {
         description: 'Audit ledger configuration changed',
       })
     }
+    // --- Break-glass (DORA Art. 9 privileged access): every activation, early
+    // end and review pages the alarm topic, and grants left unreviewed for
+    // 24 hours after they end raise an alarm. ---
+    new events.Rule(this, 'BreakGlassRule', {
+      eventBus: bus,
+      eventPattern: { source: ['strata'], detailType: ['BreakGlassActivated', 'BreakGlassEnded', 'BreakGlassReviewed'] },
+      targets: [new targets.SnsTopic(alarmTopic)],
+      description: 'Break-glass grant activated, ended or reviewed',
+    })
+    const sweeperFn = goLambda('Sweeper', 'sweeper', {
+      environment: { TABLE_NAME: table.tableName },
+      timeout: Duration.minutes(1),
+    })
+    table.grantReadData(sweeperFn)
+    new events.Rule(this, 'SweeperSchedule', {
+      schedule: events.Schedule.rate(Duration.hours(1)),
+      targets: [new targets.LambdaFunction(sweeperFn)],
+    })
+    const hourly = Duration.hours(1)
+    alarm(
+      'BreakGlassReviewOverdueAlarm',
+      new cloudwatch.Metric({ namespace: 'Strata', metricName: 'BreakGlassOverdueReviews', statistic: 'Maximum', period: hourly }),
+      0,
+      'A break-glass grant ended more than 24 hours ago and nobody has reviewed it: strata breakglass list --open',
+    )
+    alarm('SweeperErrorsAlarm', sweeperFn.metricErrors({ period: hourly }), 0, 'The break-glass sweeper Lambda is failing, so overdue reviews go unnoticed.')
+
     // --- Web console files and its runtime config. ---
     const webDist = path.join(root, 'web/dist')
     const config = {

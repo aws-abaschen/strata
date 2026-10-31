@@ -49,6 +49,11 @@ func TestClosedBootstrap(t *testing.T) {
 	// Main of the policy repo cannot be deleted, not even by an admin: that
 	// would reopen the bootstrap window.
 	admin := &cli.Client{API: h.srv.URL, Token: root}
+	if _, err := admin.StartBreakGlass(context.Background(), cli.BreakGlassRequest{
+		Reason: "testing the policy repo guard", WorkItem: "INC-2", Repos: []string{"strata-policies"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := admin.DeleteRef(context.Background(), "strata-policies", "main"); err == nil || !strings.Contains(err.Error(), "cannot be deleted") {
 		t.Fatalf("deleting policy main: %v", err)
 	}

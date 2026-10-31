@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws-abaschen/strata/backend/internal/api"
 	"github.com/aws-abaschen/strata/backend/internal/cli"
@@ -25,6 +27,7 @@ type harness struct {
 	srv    *httptest.Server
 	mem    *store.Memory
 	events *recorder
+	skew   atomic.Int64 // added to the server clock, in nanoseconds
 }
 
 // newHarness serves the API and the memory store's upload URLs. The bearer
@@ -36,7 +39,9 @@ func newHarnessMode(t *testing.T, openBootstrap bool) *harness {
 	mem := store.NewMemory()
 	ev := &recorder{}
 	mem.OnAudit = func(r core.AuditRecord) { ev.types = append(ev.types, r.Action) }
-	a := &api.API{Objects: mem, Meta: mem, WebURL: "https://strata.example.com", OpenBootstrap: openBootstrap}
+	hs := &harness{t: t, mem: mem, events: ev}
+	a := &api.API{Objects: mem, Meta: mem, WebURL: "https://strata.example.com", OpenBootstrap: openBootstrap,
+		Now: func() time.Time { return time.Now().Add(time.Duration(hs.skew.Load())) }}
 	h := a.Handler()
 	mux := http.NewServeMux()
 	mux.Handle("/_objects/", mem.UploadHandler())
@@ -47,7 +52,8 @@ func newHarnessMode(t *testing.T, openBootstrap bool) *harness {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	mem.BaseURL = srv.URL
-	return &harness{t: t, srv: srv, mem: mem, events: ev}
+	hs.srv = srv
+	return hs
 }
 
 // run executes a strata command in dir as user and returns its output.

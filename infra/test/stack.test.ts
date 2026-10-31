@@ -53,7 +53,7 @@ test('tracker gets change events with retries and a DLQ', () => {
 })
 
 test('lambdas are arm64 Go custom runtime', () => {
-  template.resourcePropertiesCountIs('AWS::Lambda::Function', { Runtime: 'provided.al2023', Architectures: ['arm64'] }, 3)
+  template.resourcePropertiesCountIs('AWS::Lambda::Function', { Runtime: 'provided.al2023', Architectures: ['arm64'] }, 4)
 })
 
 test('audit records stream to the ledger, archived under Object Lock', () => {
@@ -67,7 +67,9 @@ test('audit records stream to the ledger, archived under Object Lock', () => {
 })
 
 test('ledger failures and tampering raise alarms', () => {
-  template.resourceCountIs('AWS::CloudWatch::Alarm', 4)
+  template.resourceCountIs('AWS::CloudWatch::Alarm', 6)
+  template.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'BreakGlassOverdueReviews', Namespace: 'Strata' })
+  template.hasResourceProperties('AWS::Events::Rule', { EventPattern: { 'detail-type': ['BreakGlassActivated', 'BreakGlassEnded', 'BreakGlassReviewed'] } })
   template.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'IteratorAge', Threshold: 300000 })
   template.hasResourceProperties('AWS::Events::Rule', {
     EventPattern: Match.objectLike({ source: ['aws.lambda'], detail: Match.objectLike({ eventName: Match.arrayWith([{ prefix: 'UpdateEventSourceMapping' }]) }) }),

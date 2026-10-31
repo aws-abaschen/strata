@@ -363,6 +363,14 @@ func (d *Dynamo) transact(ctx context.Context, repo string, audit core.AuditEntr
 		all := append(slices.Clone(tx),
 			types.TransactWriteItem{Put: &types.Put{Item: recItem, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
 			types.TransactWriteItem{Put: headPut})
+		if audit.BreakGlass != "" {
+			// What a grant was used for, readable without scanning every ledger.
+			act, err := item("BGACT#"+audit.BreakGlass, repo+"#"+auditSK(rec.Seq), rec, nil)
+			if err != nil {
+				return err
+			}
+			all = append(all, types.TransactWriteItem{Put: &types.Put{Item: act}})
+		}
 		for _, t := range all {
 			switch {
 			case t.Put != nil:

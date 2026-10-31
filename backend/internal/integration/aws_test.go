@@ -188,4 +188,44 @@ func TestDeployedStack(t *testing.T) {
 		time.Sleep(3 * time.Second)
 	}
 	t.Logf("ok: repos %s and %s", layer, app)
+
+	// Break-glass against real DynamoDB: a forbid-all policy locks everyone
+	// out, admins included; a grant lets the fix through, tagged and indexed
+	// in the same transaction as the change.
+	b := &api.API{Objects: a.Objects, Meta: a.Meta, PolicyRepo: id + "-pol"}
+	bh := b.Handler()
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := strings.TrimPrefix(r.Header.Get("authorization"), "Bearer ")
+		bh.ServeHTTP(w, r.WithContext(api.WithPrincipal(r.Context(), api.ParseDevToken(tok))))
+	}))
+	defer srv2.Close()
+	h2 := &harness{t: t, srv: srv2}
+	root, sec := "it-root-"+id+"@example.com;strata-admins", "it-sec-"+id+"@example.com;strata-admins"
+	pol := t.TempDir()
+	h2.ok(pol, root, "repo", "create", id+"-pol")
+	h2.ok(pol, root, "init", "--repo", id+"-pol")
+	write(t, pol, map[string]string{"rules.cedar": `forbid (principal, action, resource);`})
+	h2.ok(pol, root, "push", "-m", ticket+" lock everyone out")
+	if _, code := h2.run(t.TempDir(), root, "clone", id+"-pol"); code == 0 {
+		t.Fatal("forbid-all must bind admins without a grant")
+	}
+	start := []string{"breakglass", "start", "--reason", "integration test lockout", "--work-item", ticket, "--repo", id + "-pol", "--for", "10m"}
+	out = h2.ok(t.TempDir(), root, start...)
+	gid := strings.Fields(out)[1]
+	if _, code := h2.run(t.TempDir(), root, start...); code == 0 {
+		t.Fatal("a second active grant must be refused")
+	}
+	fix := t.TempDir()
+	h2.ok(t.TempDir(), root, "clone", id+"-pol", fix)
+	write(t, fix, map[string]string{"rules.cedar": `permit (principal, action, resource);`})
+	h2.ok(fix, root, "push", "-m", ticket+" restore access")
+	h2.ok(t.TempDir(), root, "breakglass", "end")
+	if out := h2.ok(t.TempDir(), sec, "breakglass", "show", gid); !strings.Contains(out, "1 actions") {
+		t.Fatalf("grant activity:\n%s", out)
+	}
+	h2.ok(t.TempDir(), sec, "breakglass", "review", gid, "--outcome", "accepted", "--note", "integration test review")
+	if out := h2.ok(t.TempDir(), sec, "breakglass", "audit", "--verify"); !strings.Contains(out, "verified") {
+		t.Fatalf("break-glass ledger: %s", out)
+	}
+	t.Logf("ok: break-glass grant %s", gid)
 }
