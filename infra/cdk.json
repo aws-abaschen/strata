@@ -3,6 +3,7 @@
   "context": {
     "region": "eu-west-1",
     "authDomainPrefix": "",
-    "jiraSecretArn": ""
+    "jiraSecretArn": "",
+    "alarmEmail": "anthony@baschen.is"
   }
 }
