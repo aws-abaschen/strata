@@ -185,6 +185,38 @@ tickets like any change. They apply as soon as that repo's `main` moves.
 
 Example: [policies/strata.cedar](policies/strata.cedar).
 
+### Four-eyes approvals and protected refs
+
+The server computes facts about every write that moves a ref and passes them to Cedar
+as `context`; policy decides. There is no separate protected-branch setting to secure:
+a `forbid` in `strata-policies` guards `main` and, because forbids bind
+`strata-admins`, the admins too.
+
+| `context.` | Meaning |
+| --- | --- |
+| `ref` | the ref being moved (`""` when the request moves none) |
+| `fastForward` | the new target descends from the current one (first-parent walk, at most 100 changes; deletes and rollbacks are `false`) |
+| `approvals` | distinct approvers of that exact revision who authored **no** change in the range from the current target to the new one |
+| `hasWorkItem` | the change, with its annotations, links a work item |
+
+- **Approvals** are `POST /repos/{repo}/changes/{rev}/approvals` (Cedar action
+  `approve`), stored as `APPR#<rev>#<approver>` in the same transaction as an
+  `ApprovalGranted` audit record. They bind to the revision hash, so amending a change
+  starts again at zero.
+- **Separation of duties is code, not policy:** the author of a change cannot approve it,
+  administrators included, and an author of any change in the range does not count
+  (A writes c1, B stacks c2, A's approval of c2 is ignored).
+- **Flow:** `strata push --review NAME` (to `review/NAME`) → colleague `strata approve REV`
+  → `strata promote REV --ref main`. A new change has no approvals, so a policy that
+  demands them cannot be met by a direct push.
+- **Evidence:** the `RefUpdated` record in the Object-Lock ledger lists the approvers of
+  the promotion.
+- **Fails closed:** if a policy errors while evaluating (Cedar silently skips an erroring
+  `forbid`), the request is denied and the decision names the policy.
+
+Example: [policies/four-eyes.cedar](policies/four-eyes.cedar). Mind that protecting the
+policy repository this way means a second person is needed to change policies.
+
 ## Security and operations baseline
 
 - **Encryption:** customer-managed KMS keys with yearly rotation, one each for the data

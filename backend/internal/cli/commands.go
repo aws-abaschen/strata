@@ -27,6 +27,9 @@ Usage:
   strata log [-n 20]                            history of the current ref
   strata show [REV]                             one change with its annotations
   strata annotate [REV] [--note TEXT] [metadata]
+  strata push --review NAME -m MESSAGE          push to review/NAME, for approval
+  strata approve [REV] [--note TEXT]            sign off on a colleague's change
+  strata promote [REV] [--ref main]             move a ref to an approved revision
   strata find --work-item KEY | --label LABEL   search every repository
   strata audit [-n 20] [--verify]               the ledger, hash chain verified here
 
@@ -230,6 +233,7 @@ func run(ctx context.Context, args []string, env Env) error {
 	case "push":
 		msg := fs.String("m", "", "message")
 		amend := fs.Bool("amend", false, "replace HEAD with a new revision of the same change")
+		review := fs.String("review", "", "push to review/NAME instead of the ref, for approval and promotion")
 		var mf metaFlags
 		mf.register(fs)
 		if err := fs.Parse(args); err != nil {
@@ -239,7 +243,52 @@ func run(ctx context.Context, args []string, env Env) error {
 		if err != nil {
 			return err
 		}
-		return push(ctx, c, &st, root, *msg, md, *amend, env.Out)
+		return push(ctx, c, &st, root, *msg, md, *amend, *review, env.Out)
+	case "approve":
+		note := fs.String("note", "", "why you approve")
+		if err := fs.Parse(reorder(args)); err != nil {
+			return err
+		}
+		rev, err := revArg(fs, st)
+		if err != nil {
+			return err
+		}
+		if _, err := c.Approve(ctx, st.Repo, rev, *note); err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Out, "approved %s\n", rev.Short())
+		return nil
+	case "promote":
+		ref := fs.String("ref", "", "ref to move (default: the working copy's ref)")
+		if err := fs.Parse(reorder(args)); err != nil {
+			return err
+		}
+		rev, err := revArg(fs, st)
+		if err != nil {
+			return err
+		}
+		name := *ref
+		if name == "" {
+			name = st.Ref
+		}
+		cur, _, err := c.GetRef(ctx, st.Repo, name)
+		if err != nil {
+			return err
+		}
+		if _, err := c.MoveRef(ctx, st.Repo, name, rev, cur.Target); err != nil {
+			return err
+		}
+		if name == st.Ref {
+			// The working copy's ref moved: continue from the promoted change.
+			if d, err := c.GetChange(ctx, st.Repo, rev); err == nil {
+				st.Head, st.ChangeID = rev, d.Change.ChangeID
+				if err := SaveState(root, st); err != nil {
+					return err
+				}
+			}
+		}
+		fmt.Fprintf(env.Out, "%s now at %s\n", name, rev.Short())
+		return nil
 	case "log":
 		n := fs.Int("n", 20, "number of changes")
 		if err := fs.Parse(args); err != nil {
@@ -461,7 +510,7 @@ func printChange(w io.Writer, c core.Change, md core.Metadata) {
 	}
 }
 
-func push(ctx context.Context, c *Client, st *State, root, msg string, md core.Metadata, amend bool, out io.Writer) error {
+func push(ctx context.Context, c *Client, st *State, root, msg string, md core.Metadata, amend bool, review string, out io.Writer) error {
 	if strings.TrimSpace(msg) == "" {
 		return errors.New("a message is required: -m \"PAY-42 what changed\"")
 	}
@@ -493,6 +542,23 @@ func push(ctx context.Context, c *Client, st *State, root, msg string, md core.M
 		in.Parents = head.Change.Parents
 	} else if st.Head != "" {
 		in.Parents = []core.Hash{st.Head}
+	}
+	if review != "" {
+		// A review push leaves the working copy's ref and HEAD alone: the
+		// change waits on review/NAME until it is approved and promoted.
+		in.Ref = "review/" + review
+		cur, _, err := c.GetRef(ctx, st.Repo, in.Ref)
+		if err != nil {
+			return err
+		}
+		in.ExpectedRef = &cur.Target
+		ch, err := c.CreateChange(ctx, st.Repo, in)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "pushed %s to %s for review (%d files, %d new objects)\nask a colleague: strata approve %s\nthen: strata promote %s\n",
+			ch.Revision.Short(), in.Ref, snap.Files, sent, ch.Revision, ch.Revision)
+		return nil
 	}
 	ch, err := c.CreateChange(ctx, st.Repo, in)
 	if err != nil {

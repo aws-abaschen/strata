@@ -112,6 +112,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /repos/{repo}/changes", a.createChange)
 	mux.HandleFunc("GET /repos/{repo}/changes/{rev}", a.getChange)
 	mux.HandleFunc("POST /repos/{repo}/changes/{rev}/annotations", a.annotate)
+	mux.HandleFunc("POST /repos/{repo}/changes/{rev}/approvals", a.approve)
+	mux.HandleFunc("GET /repos/{repo}/changes/{rev}/approvals", a.listApprovals)
 	mux.HandleFunc("GET /work-items/{system}/{key}", a.findWorkItem)
 	mux.HandleFunc("GET /labels/{label...}", a.findLabel)
 	mux.HandleFunc("PUT /repos/{repo}/settings", a.updateSettings)
@@ -366,12 +368,14 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, fmt.Errorf("%w: main of the policy repository cannot be deleted", core.ErrPolicy))
 		return
 	}
+	var head core.Change
 	if in.Target != "" {
 		c, err := a.Meta.GetChange(r.Context(), rp.Name, in.Target)
 		if err != nil {
 			a.fail(w, r, fmt.Errorf("target revision: %w", err))
 			return
 		}
+		head = c
 		if a.authz.IsPolicyRepo(rp.Name) && name == "main" {
 			if err := a.authz.Validate(r.Context(), c.Tree); err != nil {
 				a.fail(w, r, fmt.Errorf("policies: %w", err))
@@ -379,8 +383,13 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	mv, err := a.authorizeRefMove(r.Context(), principal(r), rp, name, head, in.Expected)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
 	ref := core.Ref{Name: name, Target: in.Target, UpdatedBy: identity(r), UpdatedAt: a.now().UTC()}
-	entry, err := a.audit(r, "RefUpdated", map[string]any{"repo": rp.Name, "ref": ref, "previous": in.Expected})
+	entry, err := a.audit(r, "RefUpdated", map[string]any{"repo": rp.Name, "ref": ref, "previous": in.Expected, "approvers": mv.Approvers})
 	if err != nil {
 		a.fail(w, r, err)
 		return
@@ -717,6 +726,15 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if ref != nil {
+		// A new change has no approvals yet, so a policy that demands them
+		// sends the push through a review ref, then a promotion (updateRef).
+		if _, err = a.authorizeRefMove(ctx, principal(r), rp, ref.Name, c, ref.Expected); err != nil {
+			a.fail(w, r, err)
+			return
+		}
+	}
+
 	// S3 first: the sealed document is the record of truth; the index entry
 	// only becomes visible once it is safely stored.
 	if err := a.Objects.PutChangeDoc(ctx, c, doc); err != nil && !errors.Is(err, store.ErrExists) {
@@ -774,7 +792,12 @@ func (a *API) getChange(w http.ResponseWriter, r *http.Request) {
 		eff.Merge(n.Metadata)
 	}
 	eff.Normalize()
-	writeJSON(w, http.StatusOK, map[string]any{"change": c, "annotations": notes, "effectiveMetadata": eff, "latestRevision": latest})
+	approvals, err := a.Meta.ListApprovals(r.Context(), rp.Name, rev)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"change": c, "annotations": notes, "approvals": approvals, "effectiveMetadata": eff, "latestRevision": latest})
 }
 
 func (a *API) annotate(w http.ResponseWriter, r *http.Request) {

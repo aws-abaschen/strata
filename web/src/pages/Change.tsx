@@ -13,7 +13,7 @@ export function ChangePage() {
 
   if (q.isPending) return <Loading />
   if (q.error) return <ErrorBox error={q.error} />
-  const { change: c, annotations, effectiveMetadata, latestRevision } = q.data
+  const { change: c, annotations, approvals = [], effectiveMetadata, latestRevision } = q.data
   const body = c.message.slice(subject(c.message).length).trim()
 
   return (
@@ -61,6 +61,21 @@ export function ChangePage() {
         {body && <pre className="message">{body}</pre>}
       </div>
 
+      <h2>Approvals</h2>
+      <p className="muted">Sign-offs bind to this exact revision. You cannot approve a change you wrote.</p>
+      {approvals.length === 0 && <p className="muted">None yet.</p>}
+      <ul className="list">
+        {approvals.map((a) => (
+          <li key={a.approver}>
+            <span>{a.note || <span className="muted">approved</span>}</span>
+            <span className="muted right">
+              {a.approver} · {when(a.createdAt)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <ApproveButton repo={repo} rev={rev} />
+
       <h2>Annotations</h2>
       <p className="muted">Add tickets, labels or notes after the fact. The revision itself never changes.</p>
       {annotations.length === 0 && <p className="muted">None yet.</p>}
@@ -77,6 +92,30 @@ export function ChangePage() {
       </ul>
       <AnnotateForm repo={repo} rev={rev} />
     </section>
+  )
+}
+
+function ApproveButton({ repo, rev }: { repo: string; rev: string }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const [note, setNote] = useState('')
+  const m = useMutation({
+    mutationFn: () => api.approve(repo, rev, note.trim()),
+    onSuccess: () => {
+      setNote('')
+      qc.invalidateQueries({ queryKey: ['change', repo, rev] })
+    },
+  })
+  return (
+    <div className="card stack">
+      <input aria-label="Approval note" placeholder="Why you approve (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+      <div>
+        <button className="btn" disabled={m.isPending} onClick={() => m.mutate()}>
+          Approve this revision
+        </button>
+      </div>
+      {m.error && <ErrorBox error={m.error} />}
+    </div>
   )
 }
 

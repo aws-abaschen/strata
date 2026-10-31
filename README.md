@@ -24,6 +24,7 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Layers: org → business unit → team → repo cascade with locked, override and append files | done |
 | Audit ledger: hash-chained record of every write, archived under S3 Object Lock, `strata audit --verify`; events published from the ledger (never lost) | done |
 | Policy-as-code permissions: Cedar policies versioned in a Strata repo, groups from Cognito, Layer-aware (`resource in Repo::"payments-rules"`) | done |
+| Four-eyes approvals and protected refs: approvals bound to a revision, authors never count, ref-move facts in the Cedar context, approvers recorded in the ledger | done |
 | `strata pull`: three-way merge of your edits with the server's latest (line-level for text, conflict markers, push blocked until resolved) | done |
 | Branch merges in the web console, wave rollouts, Git bridge | next |
 

@@ -462,6 +462,33 @@ func (d *Dynamo) ListAnnotations(ctx context.Context, repo string, rev core.Hash
 	return decodeAll[core.Annotation](items)
 }
 
+// PutApproval implements Meta.
+func (d *Dynamo) PutApproval(ctx context.Context, a core.Approval, audit core.AuditEntry) error {
+	if _, err := d.GetChange(ctx, a.Repo, a.Revision); err != nil {
+		return err
+	}
+	it, err := item(repoPK(a.Repo), "APPR#"+string(a.Revision)+"#"+a.Approver, a, nil)
+	if err != nil {
+		return err
+	}
+	return d.transact(ctx, a.Repo, audit, []types.TransactWriteItem{
+		{Put: &types.Put{Item: it, ConditionExpression: aws.String("attribute_not_exists(PK)")}},
+	})
+}
+
+// ListApprovals implements Meta.
+func (d *Dynamo) ListApprovals(ctx context.Context, repo string, rev core.Hash) ([]core.Approval, error) {
+	items, err := d.query(ctx, &dynamodb.QueryInput{
+		KeyConditionExpression:    aws.String("PK = :p AND begins_with(SK, :s)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":p": s(repoPK(repo)), ":s": s("APPR#" + string(rev) + "#")},
+		ConsistentRead:            aws.Bool(true),
+	}, 0)
+	if err != nil {
+		return nil, err
+	}
+	return decodeAll[core.Approval](items)
+}
+
 func (d *Dynamo) find(ctx context.Context, pk string, limit int) ([]core.ChangeSummary, error) {
 	items, err := d.query(ctx, &dynamodb.QueryInput{
 		KeyConditionExpression:    aws.String("PK = :p"),

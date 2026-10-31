@@ -152,6 +152,12 @@ func TestDeployedStack(t *testing.T) {
 	h.ok(a1, ana, "layers", "unset")
 	h.ok(a1, ana, "layers", "set", layer)
 
+	// Four-eyes: the approval item and its audit record in one DynamoDB transaction.
+	if _, code := h.run(a2, bo, "approve"); code == 0 {
+		t.Fatal("bo must not approve his own change")
+	}
+	h.ok(a2, ana, "approve", "--note", "integration test")
+
 	// Work tracking and search.
 	h.ok(a1, bo, "annotate", "--work-item", "SEC-"+ticket[7:], "--note", "reviewed")
 	if !strings.Contains(h.ok(t.TempDir(), bo, "find", "--work-item", ticket), app) {

@@ -39,6 +39,7 @@ const (
 	Annotate Action = "annotate" // add work items, labels, notes
 	Admin    Action = "admin"    // change settings (the Layer it extends)
 	Create   Action = "create"   // create the repository
+	Approve  Action = "approve"  // sign off on a change (never one's own)
 )
 
 // DefaultPolicyRepo holds the policies unless configured otherwise.
@@ -268,8 +269,30 @@ type Decision struct {
 	Policies []string
 }
 
-// Check evaluates one request.
+// Facts are what the server computed about a ref move, exposed to policies
+// as `context`. Every request carries all of them, with neutral defaults, so
+// a policy never fails on a missing attribute.
+type Facts struct {
+	Ref         string // ref being moved; "" if the request moves none
+	FastForward bool   // the new target descends from the current one
+	Approvals   int    // distinct approvers of the target, none of them an author in the range
+	HasWorkItem bool   // the change links at least one work item
+}
+
+func (f Facts) record() cedar.Record {
+	return cedar.NewRecord(cedar.RecordMap{
+		"ref": cedar.String(f.Ref), "fastForward": cedar.Boolean(f.FastForward),
+		"approvals": cedar.Long(f.Approvals), "hasWorkItem": cedar.Boolean(f.HasWorkItem),
+	})
+}
+
+// Check evaluates one request that moves no ref.
 func (a *Authorizer) Check(ctx context.Context, p Principal, action Action, repo core.Repo) (Decision, error) {
+	return a.CheckWith(ctx, p, action, repo, Facts{FastForward: true})
+}
+
+// CheckWith evaluates one request with facts about the ref move.
+func (a *Authorizer) CheckWith(ctx context.Context, p Principal, action Action, repo core.Repo, f Facts) (Decision, error) {
 	ps, _, err := a.Policies(ctx)
 	if err != nil {
 		return Decision{}, err
@@ -282,9 +305,17 @@ func (a *Authorizer) Check(ctx context.Context, p Principal, action Action, repo
 		Principal: cedar.NewEntityUID("User", cedar.String(p.ID)),
 		Action:    cedar.NewEntityUID("Action", cedar.String(action)),
 		Resource:  repoUID(repo.Name),
-		Context:   cedar.NewRecord(cedar.RecordMap{}),
+		Context:   f.record(),
 	})
 	d := Decision{Allowed: ok == cedar.Allow}
+	if len(diag.Errors) > 0 {
+		// A forbid that errors is skipped by Cedar, which would fail open.
+		d.Allowed = false
+		for _, e := range diag.Errors {
+			d.Policies = append(d.Policies, string(e.PolicyID)+" (evaluation error)")
+		}
+		return d, nil
+	}
 	for _, r := range diag.Reasons {
 		d.Policies = append(d.Policies, string(r.PolicyID))
 	}
@@ -293,7 +324,12 @@ func (a *Authorizer) Check(ctx context.Context, p Principal, action Action, repo
 
 // Require returns a core.ErrPolicy error unless the request is allowed.
 func (a *Authorizer) Require(ctx context.Context, p Principal, action Action, repo core.Repo) error {
-	d, err := a.Check(ctx, p, action, repo)
+	return a.RequireWith(ctx, p, action, repo, Facts{FastForward: true})
+}
+
+// RequireWith is Require with facts about a ref move.
+func (a *Authorizer) RequireWith(ctx context.Context, p Principal, action Action, repo core.Repo, f Facts) error {
+	d, err := a.CheckWith(ctx, p, action, repo, f)
 	if err != nil {
 		return err
 	}

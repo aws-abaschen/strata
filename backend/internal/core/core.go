@@ -365,6 +365,16 @@ type Annotation struct {
 	Metadata  Metadata  `json:"metadata"`
 }
 
+// Approval is one person's sign-off on one exact revision. It binds to the
+// revision hash, so amending the change (a new revision) starts at zero.
+type Approval struct {
+	Repo      string    `json:"repo"`
+	Revision  Hash      `json:"revision"`
+	Approver  string    `json:"approver"`
+	CreatedAt time.Time `json:"createdAt"`
+	Note      string    `json:"note,omitempty"`
+}
+
 // Repo is a repository record.
 type Repo struct {
 	Name        string    `json:"name"`

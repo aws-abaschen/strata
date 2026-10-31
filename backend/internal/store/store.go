@@ -77,6 +77,11 @@ type Meta interface {
 	PutAnnotation(ctx context.Context, a core.Annotation, audit core.AuditEntry) error
 	ListAnnotations(ctx context.Context, repo string, rev core.Hash) ([]core.Annotation, error)
 
+	// PutApproval records a sign-off, once per approver and revision
+	// (ErrExists on a repeat).
+	PutApproval(ctx context.Context, a core.Approval, audit core.AuditEntry) error
+	ListApprovals(ctx context.Context, repo string, rev core.Hash) ([]core.Approval, error)
+
 	// FindByWorkItem and FindByLabel search across all repositories, newest first.
 	FindByWorkItem(ctx context.Context, system, key string, limit int) ([]core.ChangeSummary, error)
 	FindByLabel(ctx context.Context, label string, limit int) ([]core.ChangeSummary, error)

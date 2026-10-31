@@ -27,6 +27,7 @@ type Memory struct {
 	changes     map[string]core.Change
 	pointers    map[string]core.Hash
 	annotations map[string][]core.Annotation
+	approvals   map[string][]core.Approval
 	index       map[string][]core.ChangeSummary
 	audits      map[string][]core.AuditRecord
 
@@ -40,7 +41,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		objects: map[string][]byte{}, changeDocs: map[string][]byte{}, repos: map[string]core.Repo{},
 		refs: map[string]map[string]core.Ref{}, changes: map[string]core.Change{}, pointers: map[string]core.Hash{},
-		annotations: map[string][]core.Annotation{}, index: map[string][]core.ChangeSummary{}, audits: map[string][]core.AuditRecord{},
+		annotations: map[string][]core.Annotation{}, approvals: map[string][]core.Approval{}, index: map[string][]core.ChangeSummary{}, audits: map[string][]core.AuditRecord{},
 	}
 }
 
@@ -377,6 +378,35 @@ func (m *Memory) ListAnnotations(_ context.Context, repo string, rev core.Hash) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]core.Annotation{}, m.annotations[okey(repo, rev)]...), nil
+}
+
+// PutApproval implements Meta.
+func (m *Memory) PutApproval(_ context.Context, a core.Approval, audit core.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := okey(a.Repo, a.Revision)
+	if _, ok := m.changes[k]; !ok {
+		return ErrNotFound
+	}
+	for _, e := range m.approvals[k] {
+		if e.Approver == a.Approver {
+			return ErrExists
+		}
+	}
+	rec, err := m.prepareAudit(a.Repo, audit)
+	if err != nil {
+		return err
+	}
+	m.approvals[k] = append(m.approvals[k], a)
+	m.commitAudit(rec)
+	return nil
+}
+
+// ListApprovals implements Meta.
+func (m *Memory) ListApprovals(_ context.Context, repo string, rev core.Hash) ([]core.Approval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]core.Approval{}, m.approvals[okey(repo, rev)]...), nil
 }
 
 func (m *Memory) find(k string, limit int) []core.ChangeSummary {

@@ -94,9 +94,18 @@ export interface Annotation {
   metadata: Metadata
 }
 
+export interface Approval {
+  repo: string
+  revision: Hash
+  approver: string
+  createdAt: string
+  note?: string
+}
+
 export interface ChangeDetail {
   change: Change
   annotations: Annotation[]
+  approvals: Approval[]
   effectiveMetadata: Metadata
   latestRevision: Hash
 }
@@ -184,6 +193,8 @@ export class Api {
     this.call<TreeResult>('GET', `/repos/${enc(repo)}/tree/${rev}?path=${encodeURIComponent(path)}`)
   annotate = (repo: string, rev: Hash, note: string, metadata: Metadata) =>
     this.call<Annotation>('POST', `/repos/${enc(repo)}/changes/${rev}/annotations`, { note, metadata })
+  approve = (repo: string, rev: Hash, note: string) =>
+    this.call<Approval>('POST', `/repos/${enc(repo)}/changes/${rev}/approvals`, { note })
   findWorkItem = (w: WorkItem) =>
     this.call<{ workItem: WorkItem; changes: ChangeSummary[] }>('GET', `/work-items/${enc(w.system)}/${enc(w.key)}`)
   findLabel = (label: string) =>

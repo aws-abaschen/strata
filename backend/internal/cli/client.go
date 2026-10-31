@@ -273,6 +273,28 @@ func (c *Client) Annotate(ctx context.Context, repo string, rev core.Hash, note 
 	return out, err
 }
 
+// Approve signs off on one exact revision.
+func (c *Client) Approve(ctx context.Context, repo string, rev core.Hash, note string) (core.Approval, error) {
+	var out core.Approval
+	err := c.do(ctx, http.MethodPost, "/repos/"+esc(repo)+"/changes/"+string(rev)+"/approvals", map[string]any{"note": note}, &out)
+	return out, err
+}
+
+// Approvals lists the sign-offs on a revision.
+func (c *Client) Approvals(ctx context.Context, repo string, rev core.Hash) ([]core.Approval, error) {
+	var out struct{ Approvals []core.Approval }
+	err := c.do(ctx, http.MethodGet, "/repos/"+esc(repo)+"/changes/"+string(rev)+"/approvals", nil, &out)
+	return out.Approvals, err
+}
+
+// MoveRef points a ref at rev, with compare-and-swap on expected (empty = the
+// ref must not exist yet).
+func (c *Client) MoveRef(ctx context.Context, repo, name string, rev, expected core.Hash) (core.Ref, error) {
+	var out core.Ref
+	err := c.do(ctx, http.MethodPut, "/repos/"+esc(repo)+"/refs/"+name, map[string]any{"target": rev, "expected": expected}, &out)
+	return out, err
+}
+
 // FindWorkItem lists changes linked to a work item, across repositories.
 func (c *Client) FindWorkItem(ctx context.Context, w core.WorkItem) ([]core.ChangeSummary, error) {
 	var out struct{ Changes []core.ChangeSummary }
