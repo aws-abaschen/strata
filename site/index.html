@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata · Version control for regulated organizations</title>
+<meta name="description" content="Strata is serverless version control on Amazon S3 for regulated organizations: policy-as-code permissions, a tamper-evident audit ledger, top-down Layers for rules, prompts and agent skills, and break-glass that no policy can lock out.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="Strata · Version control for regulated organizations">
+<meta property="og:description" content="Serverless version control on Amazon S3. Every change is provable to an auditor.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://strata.baschen.is/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="/" aria-label="Strata home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#0f2a33"/><path d="M6 9.5 16 5l10 4.5L16 14z" fill="#f2b84b"/><path d="m6 15.5 10 4.5 10-4.5" fill="none" stroke="#5fc4b8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><path d="m6 21.5 10 4.5 10-4.5" fill="none" stroke="#e8eef0" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      Strata
+    </a>
+    <nav aria-label="Sections">
+      <a href="#layers">Layers</a>
+      <a href="#governance">Governance</a>
+      <a href="#break-glass">Break-glass</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#status">Status</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <span class="pill">Working prototype · built on AWS</span>
+      <h1>Version control that can <em>prove</em> every change.</h1>
+      <p class="lede">Strata is serverless version control on Amazon S3, built for banks, insurers and other regulated organizations. Teams version code and docs from the bottom up. Rules, CI templates, AI prompts and agent skills cascade from the top down. Every write lands in a tamper-evident ledger.</p>
+      <div class="ctas">
+        <a class="btn primary" href="#governance">See the controls</a>
+        <a class="btn ghost" href="#status">What works today</a>
+      </div>
+    </div>
+    <svg class="stack-art" viewBox="0 0 500 380" role="img" aria-label="Four stacked layers: organization, business unit, team and repository">
+      <path class="l4" d="M30 310 L180 260 L330 310 L180 360 Z"/>
+      <path class="l3" d="M30 230 L180 180 L330 230 L180 280 Z"/>
+      <path class="l2" d="M30 150 L180 100 L330 150 L180 200 Z"/>
+      <path class="l1" d="M30 70 L180 20 L330 70 L180 120 Z"/>
+      <line class="tick" x1="330" y1="70" x2="352" y2="70"/>
+      <line class="tick" x1="330" y1="150" x2="352" y2="150"/>
+      <line class="tick" x1="330" y1="230" x2="352" y2="230"/>
+      <line class="tick" x1="330" y1="310" x2="352" y2="310"/>
+      <text class="lbl" x="358" y="66">Organization</text>
+      <text class="lbl-dim" x="358" y="84">ci/** locked</text>
+      <text class="lbl" x="358" y="146">Business unit</text>
+      <text class="lbl-dim" x="358" y="164">lint override</text>
+      <text class="lbl" x="358" y="226">Team</text>
+      <text class="lbl-dim" x="358" y="244">AGENTS.md append</text>
+      <text class="lbl" x="358" y="306">Repository</text>
+      <text class="lbl-dim" x="358" y="324">your code</text>
+    </svg>
+  </div>
+</section>
+
+<section class="alt" id="why">
+  <div class="wrap">
+    <p class="eyebrow">The problem</p>
+    <h2>Git was built for emailing kernel patches. Enterprises now keep their rules in it.</h2>
+    <p class="sub">Large companies store code, infrastructure, policies, and now the prompts and skills that steer AI coding agents, all in a tool that has no idea who you are or what your auditor needs.</p>
+    <div class="problems">
+      <div class="problem">
+        <h3>Servers to run</h3>
+        <p>Hosting Git at scale means fleets to patch, capacity to plan, and monorepos that slow to a crawl.</p>
+      </div>
+      <div class="problem">
+        <h3>Rules that don't spread</h3>
+        <p>Getting a new secure-coding rule into 20,000 repositories means 20,000 pull requests that teams can ignore.</p>
+      </div>
+      <div class="problem">
+        <h3>Audit trails rebuilt by hand</h3>
+        <p>Compliance teams reconstruct evidence from logs that were never meant to be evidence.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="layers">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">Layers</p>
+      <h2>Bottom-up for work. Top-down for rules.</h2>
+      <p class="sub">A Layer is a repository meant to be inherited, not forked: CI templates, lint rules, a secure-coding prompt, an <code>AGENTS.md</code>, the MCP servers agents may call. It cascades from the organization to every repository that extends it, and each path says how lower levels may change it.</p>
+      <div class="cascade" aria-label="Layer cascade">
+        <div class="tier"><b>org-rules</b><span>platform &amp; security</span></div>
+        <div class="tier"><b>payments-rules</b><span>business unit</span></div>
+        <div class="tier"><b>cards-team</b><span>team</span></div>
+        <div class="tier"><b>cards-api</b><span>stores only its own files</span></div>
+      </div>
+      <div class="modes">
+        <div class="mode"><span class="tag locked">locked</span><p>Lower levels cannot change it. The API rejects any push that touches it.</p></div>
+        <div class="mode"><span class="tag override">override</span><p>Lower levels may replace it, like a default formatter config.</p></div>
+        <div class="mode"><span class="tag append">append</span><p>Lower levels add their own lines, which survive every pull.</p></div>
+      </div>
+    </div>
+    <div class="term" aria-label="Terminal example">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="c"># platform team publishes the org baseline</span>
+<span class="p">$ </span>strata repo create org-rules --layer
+<span class="p">$ </span>cat strata.layer.json
+{"rules":[{"path":"ci/**","mode":"locked"},
+          {"path":"AGENTS.md","mode":"append"}]}
+<span class="p">$ </span>strata push -m "OPS-1 org baseline"
+
+<span class="c"># any team, anywhere in the company</span>
+<span class="p">$ </span>strata repo create cards-api --extends org-rules
+<span class="p">$ </span>strata clone cards-api &amp;&amp; cd cards-api
+<span class="c"># ci/ and AGENTS.md arrive from org-rules</span>
+<span class="p">$ </span>echo "- PAN tokens only" &gt;&gt; AGENTS.md
+<span class="p">$ </span>strata push -m "CARD-1 skeleton"
+
+<span class="p">$ </span>strata layers fleet org-rules
+<span class="o">cards-api  payments-api  ledger-svc  …</span></pre>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="governance">
+  <div class="wrap">
+    <p class="eyebrow">Governance</p>
+    <h2>Controls an auditor can check, not just a process to trust.</h2>
+    <p class="sub">Each control is enforced in the write path, in the same database transaction as the change it governs. There is no separate audit job that can fall behind or be switched off quietly.</p>
+    <div class="cards">
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg></div>
+        <h3>Tamper-evident ledger</h3>
+        <p>Every write appends a hash-chained record, archived to S3 under Object Lock. Anyone with read access can run <code>strata audit --verify</code>.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></div>
+        <h3>Policy as code</h3>
+        <p>Permissions are Cedar policies, versioned and reviewed in a Strata repo like any other change. Groups come from your identity provider. Fail-closed until the first policy lands.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M3 20c0-3 2-5 5-5s5 2 5 5M11 20c0-3 2-5 5-5s5 2 5 5"/></svg></div>
+        <h3>Four-eyes approvals</h3>
+        <p>An approval is bound to one exact revision; amending voids it. Authors never count, administrators included. The promotion record lists who approved.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="4"/></svg></div>
+        <h3>Work tracking built in</h3>
+        <p>Every change carries work items, labels and attributes. <code>PAY-42</code> in a message links itself. Find every change for a ticket across all repositories.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        <h3>Write-once storage</h3>
+        <p>Content-addressed objects in S3, checked by S3 on upload and never overwritten. Branch moves are compare-and-swap, so concurrent pushes cannot corrupt history.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h4l2-6 4 12 2-6h4"/></svg></div>
+        <h3>Events you can't lose</h3>
+        <p>Events are published from the ledger, not alongside it. Jira gets a remote link for each change; your SIEM can subscribe to the same stream.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="break-glass">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">Break-glass</p>
+      <h2>No standing admin access. No way to lock everyone out.</h2>
+      <p class="sub">Once policies exist, administrators are bound by them like everyone else. In an emergency, they open a time-boxed grant instead. Grants are checked outside the policy engine, so even a broken policy push can be fixed.</p>
+      <ol class="steps">
+        <li><div><b>Activate with a reason and a ticket</b><span>Named repositories, at most 4 hours, and only after an MFA sign-in in the last 15 minutes.</span></div></li>
+        <li><div><b>Every action is tagged</b><span>Each write under the grant is marked in its repository's ledger and indexed under the grant. Activation pages the alarm topic.</span></div></li>
+        <li><div><b>Another admin reviews it</b><span>Never the holder, and only after the grant ends. A review still open 24 hours later raises an alarm.</span></div></li>
+      </ol>
+    </div>
+    <div class="term" aria-label="Terminal example">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="p">$ </span>strata breakglass start \
+    --reason "payments down, hotfix needed" \
+    --work-item INC-42 --repo payments --for 1h
+<span class="o">break-glass bg-20261031T0912Z-4c1e active until 10:12AM on payments</span>
+
+<span class="p">$ </span>strata push -m "INC-42 hotfix"
+<span class="p">$ </span>strata breakglass end
+
+<span class="c"># the next morning, a second admin</span>
+<span class="p">$ </span>strata breakglass list --open
+<span class="p">$ </span>strata breakglass show bg-20261031T0912Z-4c1e
+<span class="o">1 actions under this grant:</span>
+<span class="o">  payments  ChangeCreated  INC-42 hotfix</span>
+<span class="p">$ </span>strata breakglass review bg-20261031T0912Z-4c1e \
+    --outcome accepted --note "diff matches INC-42"</pre>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="architecture">
+  <div class="wrap">
+    <p class="eyebrow">Architecture</p>
+    <h2>Nothing to patch. An idle repository costs only its storage.</h2>
+    <p class="sub">Every component is a managed AWS service, deployed into your own AWS account. There is no Strata-hosted service that holds your code.</p>
+    <div class="arch">
+      <svg viewBox="0 0 1000 500" role="img" aria-label="Clients call API Gateway, authenticated by Cognito. A Go Lambda checks Cedar policy and writes to S3 and DynamoDB. A DynamoDB stream feeds a ledger Lambda that archives records to an Object Lock bucket and publishes events to EventBridge, which feeds Jira, SIEM and alarms.">
+        <defs>
+          <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 L10 5 L0 10 z"/></marker>
+        </defs>
+        <rect class="box" x="250" y="20" width="190" height="72" rx="10"/>
+        <text class="t" x="345" y="50" text-anchor="middle">Cognito / your IdP</text>
+        <text class="s" x="345" y="72" text-anchor="middle">MFA, groups</text>
+
+        <rect class="box" x="20" y="134" width="180" height="80" rx="10"/>
+        <text class="t" x="110" y="168" text-anchor="middle">CLI · console · agents</text>
+        <text class="s" x="110" y="190" text-anchor="middle">people and AI alike</text>
+
+        <rect class="box" x="250" y="134" width="190" height="80" rx="10"/>
+        <text class="t" x="345" y="168" text-anchor="middle">API Gateway</text>
+        <text class="s" x="345" y="190" text-anchor="middle">JWT on every route</text>
+
+        <rect class="box key" x="490" y="134" width="200" height="80" rx="10"/>
+        <text class="t" x="590" y="168" text-anchor="middle">API Lambda (Go)</text>
+        <text class="s" x="590" y="190" text-anchor="middle">Cedar check before data</text>
+
+        <rect class="box" x="760" y="30" width="220" height="80" rx="10"/>
+        <text class="t" x="870" y="64" text-anchor="middle">S3 data</text>
+        <text class="s" x="870" y="86" text-anchor="middle">content-addressed, write-once</text>
+
+        <rect class="box key" x="760" y="150" width="220" height="80" rx="10"/>
+        <text class="t" x="870" y="184" text-anchor="middle">DynamoDB index</text>
+        <text class="s" x="870" y="206" text-anchor="middle">refs, changes, audit chain</text>
+
+        <rect class="box" x="760" y="290" width="220" height="80" rx="10"/>
+        <text class="t" x="870" y="324" text-anchor="middle">Ledger Lambda</text>
+        <text class="s" x="870" y="346" text-anchor="middle">from the table stream</text>
+
+        <rect class="box lock" x="490" y="290" width="200" height="80" rx="10"/>
+        <text class="t" x="590" y="324" text-anchor="middle">S3 audit archive</text>
+        <text class="s" x="590" y="346" text-anchor="middle">Object Lock</text>
+
+        <rect class="box" x="760" y="410" width="220" height="72" rx="10"/>
+        <text class="t" x="870" y="440" text-anchor="middle">EventBridge</text>
+        <text class="s" x="870" y="462" text-anchor="middle">ChangeCreated, BreakGlass…</text>
+
+        <rect class="box" x="490" y="410" width="200" height="72" rx="10"/>
+        <text class="t" x="590" y="440" text-anchor="middle">Jira · SIEM · alarms</text>
+        <text class="s" x="590" y="462" text-anchor="middle">retries and a DLQ</text>
+
+        <path class="ln" d="M200 174 H246" marker-end="url(#a)"/>
+        <path class="ln" d="M440 174 H486" marker-end="url(#a)"/>
+        <path class="ln" d="M345 134 V96" marker-end="url(#a)" stroke-dasharray="4 4"/>
+        <path class="ln" d="M690 160 C725 160 725 70 756 70" marker-end="url(#a)"/>
+        <path class="ln" d="M690 190 H756" marker-end="url(#a)"/>
+        <path class="ln" d="M870 230 V286" marker-end="url(#a)"/>
+        <path class="ln" d="M760 330 H694" marker-end="url(#a)"/>
+        <path class="ln" d="M870 370 V406" marker-end="url(#a)"/>
+        <path class="ln" d="M760 446 H694" marker-end="url(#a)"/>
+        <text class="s" x="880" y="264">stream</text>
+      </svg>
+    </div>
+    <div class="arch-notes">
+      <div><h3>One transaction</h3><p>A change, its ref move and its audit record commit together in DynamoDB, or not at all.</p></div>
+      <div><h3>Your keys</h3><p>Data, index and audit each use their own customer-managed KMS key, rotated yearly and retained on delete.</p></div>
+      <div><h3>Alarms on the auditors' worries</h3><p>Ledger lag, dead-letter queues, edits to the ledger function itself, and every break-glass activation.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="cost">
+  <div class="wrap cost">
+    <div>
+      <p class="eyebrow">Cost model</p>
+      <div class="big">~$0.58<small>per engineer per month, estimated</small></div>
+    </div>
+    <div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Component</th><th>Per month</th></tr></thead>
+          <tbody>
+            <tr><td>S3 storage, 2 TB Standard</td><td>~$47</td></tr>
+            <tr><td>S3 requests</td><td>~$60</td></tr>
+            <tr><td>Lambda and API Gateway</td><td>~$150</td></tr>
+            <tr><td>DynamoDB on demand</td><td>~$120</td></tr>
+            <tr><td>CloudFront egress for checkouts</td><td>~$200</td></tr>
+            <tr class="total"><td>Total</td><td>~$577</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Estimate at AWS list prices for 1,000 engineers, 2 TB of history and 5 million writes a month. People and agents who only read add no per-seat cost.</p>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="compliance">
+  <div class="wrap">
+    <p class="eyebrow">Compliance</p>
+    <h2>Designed around what a bank's auditor asks for.</h2>
+    <p class="sub">Strata is designed to support these requirements. It is not certified against any of them, and each organization stays responsible for its own compliance.</p>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>Requirement</th><th>How Strata addresses it</th></tr></thead>
+        <tbody>
+          <tr><td>DORA Art. 9: access control and change management</td><td>Cedar policy on every request, four-eyes approvals on protected branches, no standing admin access</td></tr>
+          <tr><td>DORA Art. 9(4)(c), SOX emergency changes</td><td>Time-boxed break-glass with a ticket, full tagging and an independent review</td></tr>
+          <tr><td>SOX change management, RTS 2024/1774 Art. 17</td><td>Approvals bound to a revision; work item and fast-forward required on main</td></tr>
+          <tr><td>SOC 2 CC7, ISO 27001 logging</td><td>Hash-chained ledger of every write, archived under S3 Object Lock, verifiable by anyone with read access</td></tr>
+          <tr><td>DORA Art. 28: concentration and third-party risk</td><td>Runs in your own AWS account; no extra hosted provider holds your code</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="status">
+  <div class="wrap">
+    <p class="eyebrow">Build status</p>
+    <h2>A working prototype, honestly labelled.</h2>
+    <p class="sub">Strata runs end to end on AWS today, with an integration suite that exercises the real S3 buckets and DynamoDB table. Here is what is built, and what is still ahead.</p>
+    <div class="status">
+      <div class="col done">
+        <h3>Working</h3>
+        <ul>
+          <li>Content-addressed, write-once storage on S3</li>
+          <li>Atomic refs, stable change IDs, amend</li>
+          <li><code>strata pull</code> with three-way merge</li>
+          <li>Layers: locked, override, append</li>
+          <li>Cedar policies, fail-closed bootstrap</li>
+          <li>Four-eyes approvals</li>
+          <li>Break-glass with review and alarms</li>
+          <li>Hash-chained ledger under Object Lock</li>
+          <li>Work items, labels, Jira links, search</li>
+          <li>Web console and <code>strata</code> CLI</li>
+        </ul>
+      </div>
+      <div class="col part">
+        <h3>Partly there</h3>
+        <ul>
+          <li>Large files: whole objects up to 5 GB, no chunking yet</li>
+          <li>Wave rollouts: canary refs, no automatic waves</li>
+          <li>Fleet view: who inherits, not which revision</li>
+          <li>Keys: customer-managed, not yet customer-supplied</li>
+          <li>Guardrails: locked files, no secret scanning yet</li>
+          <li>Agent identities: no scoped short-lived credentials yet</li>
+        </ul>
+      </div>
+      <div class="col next">
+        <h3>On the roadmap</h3>
+        <ul>
+          <li>Signed chain heads with a qualified timestamp</li>
+          <li><code>strata export</code> to plain Git, with a verifier</li>
+          <li>Warm standby in a second region</li>
+          <li>Git bridge for existing clients and CI</li>
+          <li>Virtual checkout for very large repositories</li>
+          <li>Signed changes and read logging</li>
+          <li>Semantic search</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Strata is an independent prototype. It runs on Amazon Web Services but is not affiliated with or endorsed by AWS.</p>
+    <p><a href="https://baschen.is">baschen.is</a> · <a href="https://baschen.is/privacy/">Privacy</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -47,6 +47,10 @@ diff: build
 deploy: build
     cd infra && pnpm exec cdk deploy Strata --require-approval broadening
 
+# Deploy the public showcase site (site/) to strata.baschen.is
+site-deploy:
+    cd infra && pnpm exec cdk deploy StrataSiteCert StrataSite --require-approval never
+
 # Print the stack outputs
 outputs:
     aws cloudformation describe-stacks --stack-name Strata --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output table

@@ -33,10 +33,16 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 
 ```
 backend/   Go: Lambdas (cmd/api, cmd/tracker), CLI (cmd/strata), internal packages
-infra/     AWS CDK (TypeScript): stack "Strata"
+infra/     AWS CDK (TypeScript): stack "Strata", plus "StrataSiteCert" and "StrataSite" for the public site
 web/       React + Vite + TypeScript web console
+site/      public showcase site (plain HTML/CSS, no build step), https://strata.baschen.is
 scripts/   helper scripts
 ```
+
+The showcase site describes only what the build status in the PR/FAQ marks as done or
+partial; everything else is labelled roadmap. Update it when a feature lands.
+`just site-deploy` (Windows: `just win::site-deploy`) publishes it; preview with
+`python -m http.server 8790 -d site`.
 
 ## Develop
 
