@@ -50,6 +50,29 @@ test('the primary replicates its table and data to the standby', () => {
   t.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'LedgerRecordsOverwritten' })
 })
 
+test('the primary replicates its user pool and fails sign-in over automatically', () => {
+  const t = Template.fromStack(
+    new StrataStack(new App(), 'P2', {
+      env: env('eu-west-1'),
+      replica: { region: 'eu-central-1', indexKeyArn: base.indexKeyArn, dataBucket: base.dataBucket, dataKeyArn: base.dataKeyArn, userPool: true },
+    }),
+  )
+  t.hasResourceProperties('AWS::Cognito::UserPoolReplica', { RegionName: 'eu-central-1' })
+  t.hasResourceProperties('AWS::Route53::HealthCheck', { HealthCheckConfig: Match.objectLike({ Type: 'HTTPS', FullyQualifiedDomainName: 'cognito-idp.eu-west-1.amazonaws.com' }) })
+  t.hasResourceProperties('AWS::Cognito::UserPoolDomain', { Routing: { Failover: Match.objectLike({ SecondaryRegion: 'eu-central-1' }) } })
+  t.hasResourceProperties('AWS::Cognito::UserPool', { IssuerConfiguration: { Type: 'UPDATED' } })
+  t.hasResourceProperties('AWS::ApiGatewayV2::Authorizer', {
+    JwtConfiguration: Match.objectLike({ Issuer: { 'Fn::Join': ['', Match.arrayWith(['https://issuer-cognito-idp.eu-west-1.amazonaws.com/'])] } }),
+  })
+})
+
+test('the standby activates its user pool replica', () => {
+  const t = Template.fromStack(
+    new StrataStack(new App(), 'S2', { env: env('eu-central-1'), standby: { primary: { ...primary, userPoolId: 'eu-west-1_x' }, base, userPoolReplica: true } }),
+  )
+  t.hasResourceProperties('AWS::Cognito::UserPoolRegionalConfigurationAttachment', { UserPoolId: 'eu-west-1_x', Status: 'ACTIVE' })
+})
+
 test('the standby runs over the replica with the primary identity and anchor key', () => {
   const t = Template.fromStack(new StrataStack(new App(), 'S', { env: env('eu-central-1'), standby: { primary, base } }))
   t.resourceCountIs('AWS::DynamoDB::GlobalTable', 0)

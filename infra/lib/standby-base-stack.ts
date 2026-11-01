@@ -2,6 +2,7 @@ import { CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from 'aws-
 import * as iam from 'aws-cdk-lib/aws-iam'
 import * as kms from 'aws-cdk-lib/aws-kms'
 import * as s3 from 'aws-cdk-lib/aws-s3'
+import { cognitoKeyStatements } from './cognito-key.js'
 import type { Construct } from 'constructs'
 
 /** What the standby needs to know about the primary (literal values: no cross-region references). */
@@ -19,6 +20,10 @@ export interface PrimaryRefs {
   apiUrl: string
   /** The web console (links in events point there). */
   webUrl: string
+  /** The Cognito user pool (a replica in the standby shares its ID). */
+  userPoolId?: string
+  /** The pool's multi-Region KMS key; the standby gets its replica. */
+  userPoolKeyArn?: string
 }
 
 export interface StandbyBaseStackProps extends StackProps {
@@ -79,6 +84,24 @@ export class StandbyBaseStack extends Stack {
     })
 
     allowLockedReplication(this.data)
+
+    // The user pool key's replica: a Cognito replica in this Region must be
+    // encrypted with the same multi-Region key.
+    if (props.primary.userPoolKeyArn) {
+      const policy = new iam.PolicyDocument({
+        statements: [
+          ...cognitoKeyStatements(this.account, '*'),
+          new iam.PolicyStatement({ sid: 'Admins', principals: [new iam.AccountRootPrincipal()], actions: ['kms:*'], resources: ['*'] }),
+        ],
+      })
+      const replicaKey = new kms.CfnReplicaKey(this, 'UserPoolKeyReplica', {
+        primaryKeyArn: props.primary.userPoolKeyArn,
+        keyPolicy: policy,
+        description: 'Replica of the Cognito user pool key',
+      })
+      replicaKey.applyRemovalPolicy(RemovalPolicy.RETAIN)
+      new CfnOutput(this, 'UserPoolKeyReplicaArn', { value: replicaKey.attrArn })
+    }
 
     const retention = Duration.days(props.auditRetentionDays ?? 365)
     this.audit = new s3.Bucket(this, 'Audit', {

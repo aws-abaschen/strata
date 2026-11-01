@@ -16,7 +16,9 @@
         "authority": "https://issuer-cognito-idp.eu-west-1.amazonaws.com/eu-west-1_eQaoU7aym",
         "clientId": "c1tes20bu6ll5k0mhu0iirdkt",
         "apiUrl": "https://qgy6sejt3g.execute-api.eu-west-1.amazonaws.com",
-        "webUrl": "https://ddvqrgpcz2y5c.cloudfront.net"
+        "webUrl": "https://ddvqrgpcz2y5c.cloudfront.net",
+        "userPoolId": "eu-west-1_eQaoU7aym",
+        "userPoolKeyArn": "arn:aws:kms:eu-west-1:067751999967:key/mrk-a5dd156c9e40489da6e498bf806ee1fa"
       },
       "standby": {
         "indexKeyArn": "arn:aws:kms:eu-central-1:067751999967:key/8167e5e9-379c-4a68-bdbc-81dfad58251c",
@@ -24,7 +26,8 @@
         "auditKeyArn": "arn:aws:kms:eu-central-1:067751999967:key/b38d39d8-6dc1-499b-b3e3-d1399f3facd0",
         "dataBucket": "stratastandbybase-data666c94c7-1eh1v3c8c3rk",
         "auditBucket": "stratastandbybase-audit3d8ade0a-slbaoqzgqj3w"
-      }
+      },
+      "userPoolReplica": true
     },
     "@aws-cdk/aws-s3:setUniqueReplicationRoleName": true
   }

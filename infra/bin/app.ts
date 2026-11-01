@@ -16,6 +16,8 @@ interface DrContext {
   standbyRegion: string
   primary: PrimaryRefs
   standby?: StandbyStores
+  /** Replicate the Cognito user pool (after StrataStandbyBase has the key replica). */
+  userPoolReplica?: boolean
 }
 const dr = app.node.tryGetContext('dr') as DrContext | undefined
 const account = '067751999967'
@@ -35,6 +37,7 @@ new StrataStack(app, 'Strata', {
     dataBucket: dr.standby.dataBucket,
     dataKeyArn: dr.standby.dataKeyArn,
     data: ctx('drDataReplication') !== 'false',
+    userPool: dr.userPoolReplica,
   },
 })
 
@@ -44,7 +47,7 @@ if (dr) {
     new StrataStack(app, 'StrataStandby', {
       env: { account, region: dr.standbyRegion },
       ...common,
-      standby: { primary: dr.primary, base: dr.standby },
+      standby: { primary: dr.primary, base: dr.standby, userPoolReplica: dr.userPoolReplica },
     })
   }
 }

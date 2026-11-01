@@ -14,6 +14,7 @@ import * as kms from 'aws-cdk-lib/aws-kms'
 import * as targets from 'aws-cdk-lib/aws-events-targets'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
 import * as logs from 'aws-cdk-lib/aws-logs'
+import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment'
 import * as secrets from 'aws-cdk-lib/aws-secretsmanager'
@@ -25,6 +26,7 @@ import * as subs from 'aws-cdk-lib/aws-sns-subscriptions'
 import { DynamoEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources'
 import * as cr from 'aws-cdk-lib/custom-resources'
 import type { Construct } from 'constructs'
+import { cognitoKeyStatements } from './cognito-key.js'
 import { allowLockedReplication, type PrimaryRefs } from './standby-base-stack.js'
 
 const root = path.join(import.meta.dirname, '../..')
@@ -61,7 +63,7 @@ export interface StrataStackProps extends StackProps {
    * replicated table and the StrataStandbyBase stores. Writes are refused
    * (HTTP 421) until strata-dr makes this region the writer.
    */
-  standby?: { primary: PrimaryRefs; base: StandbyStores }
+  standby?: { primary: PrimaryRefs; base: StandbyStores; userPoolReplica?: boolean }
 }
 
 /** The standby's stores as the primary sees them. */
@@ -69,6 +71,8 @@ export interface ReplicaRefs {
   region: string
   /** Replicate the data bucket too (default true; false keeps a replica-adding deploy to the table alone). */
   data?: boolean
+  /** Replicate the Cognito user pool (needs the key replica from StrataStandbyBase first). */
+  userPool?: boolean
   indexKeyArn: string
   dataBucket: string
   dataKeyArn: string
@@ -198,7 +202,7 @@ export class StrataStack extends Stack {
   private build(
     props: StrataStackProps,
     s: {
-      standby?: { primary: PrimaryRefs; base: StandbyStores }
+      standby?: { primary: PrimaryRefs; base: StandbyStores; userPoolReplica?: boolean }
       primaryRegion: string
       dataKey: kms.IKey
       auditKey: kms.IKey
@@ -207,6 +211,13 @@ export class StrataStack extends Stack {
     },
   ) {
     const { standby, primaryRegion, auditKey, data, table } = s
+    if (standby?.primary.userPoolId && standby.userPoolReplica) {
+      // Serve sign-in from the replica of the primary's pool here.
+      new cognito.CfnUserPoolRegionalConfigurationAttachment(this, 'UsersReplicaConfig', {
+        userPoolId: standby.primary.userPoolId,
+        status: 'ACTIVE',
+      })
+    }
     const regionEnv = { STRATA_REGION: this.region, PRIMARY_REGION: primaryRegion }
 
     // --- Events: every repo, ref and change event, archived for replay. ---
@@ -621,6 +632,30 @@ export class StrataStack extends Stack {
       refreshTokenValidity: Duration.days(7),
       preventUserExistenceErrors: true,
     })
+    // The pool's replica in the standby: same pool ID, same directory, and
+    // sign-in (passkeys, not TOTP) when the primary is down.
+    if (props.replica?.userPool) {
+      new cognito.CfnUserPoolReplica(this, 'UsersReplica', { userPoolId: users.userPoolId, regionName: props.replica.region })
+      // Automatic sign-in failover: while this Region's Cognito endpoint
+      // fails, the same login domain serves from the replica. (The Strata
+      // writer still moves only with strata-dr.) Drills invert the check.
+      const health = new route53.CfnHealthCheck(this, 'CognitoHealth', {
+        healthCheckConfig: {
+          type: 'HTTPS',
+          fullyQualifiedDomainName: `cognito-idp.${this.region}.amazonaws.com`,
+          resourcePath: `/${users.userPoolId}/.well-known/jwks.json`,
+          port: 443,
+          enableSni: true,
+          requestInterval: 30,
+          failureThreshold: 3,
+        },
+        healthCheckTags: [{ key: 'Name', value: 'strata-cognito-primary' }],
+      })
+      ;(domain.node.defaultChild as cognito.CfnUserPoolDomain).addPropertyOverride('Routing', {
+        Failover: { SecondaryRegion: props.replica.region, PrimaryRoute53HealthCheckId: health.attrHealthCheckId },
+      })
+      new CfnOutput(this, 'CognitoHealthCheckId', { value: health.attrHealthCheckId })
+    }
     new cognito.CfnManagedLoginBranding(this, 'LoginBranding', {
       userPoolId: users.userPoolId,
       clientId: client.userPoolClientId,
@@ -650,42 +685,4 @@ export class StrataStack extends Stack {
       Annotations.of(this).addWarningV2('strata:web-not-built', 'web/dist is missing: run `just build` to deploy the web console.')
     }
   }
-}
-
-/**
- * Key policy statements that let Cognito use a customer managed key for a
- * user pool in this account (any Region: a replica's key gets the same).
- * Pool ARNs use a wildcard: the pool's ARN depends on the key.
- */
-export function cognitoKeyStatements(account: string, region: string): iam.PolicyStatement[] {
-  const pools = `arn:aws:cognito-idp:${region}:${account}:userpool/*`
-  const service = [new iam.ServicePrincipal('cognito-idp.amazonaws.com'), new iam.ServicePrincipal('identitystore.amazonaws.com')]
-  const crypt = ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKeyWithoutPlaintext']
-  return [
-    new iam.PolicyStatement({
-      sid: 'CognitoService',
-      principals: service,
-      actions: crypt,
-      resources: ['*'],
-      conditions: {
-        ArnLike: { 'aws:SourceArn': pools },
-        StringEquals: { 'aws:SourceAccount': account },
-        StringLike: { 'kms:EncryptionContext:aws:cognito-idp:userpool-arn': pools },
-      },
-    }),
-    new iam.PolicyStatement({
-      sid: 'CognitoServiceDescribe',
-      principals: service,
-      actions: ['kms:DescribeKey'],
-      resources: ['*'],
-      conditions: { ArnLike: { 'aws:SourceArn': pools }, StringEquals: { 'aws:SourceAccount': account } },
-    }),
-    new iam.PolicyStatement({
-      sid: 'ViaCognito',
-      principals: [new iam.AccountPrincipal(account)],
-      actions: [...crypt, 'kms:DescribeKey'],
-      resources: ['*'],
-      conditions: { StringLike: { 'kms:ViaService': 'cognito-idp.*.amazonaws.com' } },
-    }),
-  ]
 }
