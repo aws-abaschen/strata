@@ -45,6 +45,18 @@ diff: build
 deploy: build
     cd infra && pnpm exec cdk deploy Strata --require-approval broadening
 
+# Disaster recovery (warm standby in eu-central-1): see docs/architecture.md
+dr-status:
+    cd backend; go run ./cmd/strata-dr status
+
+# One-time after creating a standby: copy objects and the audit archive that predate replication
+dr-backfill:
+    function Out($s, $r, $k) { aws cloudformation describe-stacks --stack-name $s --region $r --query "Stacks[0].Outputs[?OutputKey=='$k'].OutputValue" --output text }; aws s3 sync "s3://$(Out Strata eu-west-1 DataBucket)" "s3://$(Out StrataStandbyBase eu-central-1 DataBucket)" --source-region eu-west-1 --region eu-central-1; aws s3 sync "s3://$(Out Strata eu-west-1 AuditBucket)" "s3://$(Out StrataStandbyBase eu-central-1 AuditBucket)" --source-region eu-west-1 --region eu-central-1
+
+# Live drill: switchover to the standby and back, with writes, an anchor and a verified export
+dr-drill:
+    cd backend; $env:STRATA_DRILL = '1'; go test -tags aws -count=1 -v -timeout 40m -run TestDrill ./internal/integration/
+
 # Deploy the public showcase site (site/) to strata.baschen.is
 site-deploy:
     cd infra && pnpm exec cdk deploy StrataSiteCert StrataSite --require-approval never

@@ -29,6 +29,7 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Break-glass: no standing admin access; time-boxed grants (ticket, scope, max 4h, fresh MFA), enforced outside Cedar so no policy can lock everyone out, every use tagged in the ledger, reviewed by another admin, alerted, overdue reviews alarmed | done |
 | `strata pull`: three-way merge of your edits with the server's latest (line-level for text, conflict markers, push blocked until resolved) | done |
 | Exit: `strata export` writes a repository as plain Git plus an evidence sidecar (sealed changes, trees, ledger, anchors, annotations, approvals); `strata export verify` and an independent Python verifier prove it complete and unaltered, offline ([format](docs/export-format.md)) | done |
+| Disaster recovery: warm standby in eu-central-1 (global table, two-way object replication, its own audit archive), one writer fenced in every write transaction, `strata-dr switchover` drilled live (about 20 s of no writes, no data loss) and `promote --force` with chain repair | done |
 | Branch merges in the web console, wave rollouts, Git bridge | next |
 
 ## Layout
@@ -149,6 +150,23 @@ The export is plain Git (every revision, amended-away ones included, under
 ledger as the list of what must be there, so a missing revision, approval or ref is
 caught, not only a changed one. Exports are reproducible: the same repository gives
 the same Git object names. See [docs/export-format.md](docs/export-format.md).
+
+### Disaster recovery
+
+```sh
+just dr-status                         # writer, chains and objects in both regions
+cd backend && go run ./cmd/strata-dr switchover --to eu-central-1 --reason "quarterly drill" --work-item OPS-7
+cd backend && go run ./cmd/strata-dr switchover --to eu-west-1 --reason "failback" --work-item OPS-7
+just dr-drill                          # the whole drill as a test, against the deployed stacks
+```
+
+`strata-dr` uses your AWS credentials, not the Strata API. If eu-west-1 is down,
+`strata-dr promote --to eu-central-1 --force --reason ... --work-item ...` takes the writer
+and repairs partly replicated chains; what was lost is recorded in the ledger. Deploying a
+standby from scratch: `StrataStandbyBase`, then its outputs into `dr.standby` in
+`infra/cdk.json`, `Strata` (once with `-c drDataReplication=false` to add the table replica
+alone), `StrataStandby`, `just dr-backfill`, `strata-dr init`. See
+[docs/architecture.md](docs/architecture.md#disaster-recovery-a-warm-standby-with-one-writer).
 
 ### Jira
 

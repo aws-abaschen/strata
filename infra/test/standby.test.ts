@@ -66,6 +66,9 @@ test('the standby runs over the replica with the primary identity and anchor key
     FilterCriteria: { Filters: [{ Pattern: Match.stringLikeRegexp('AUDIT#') }] },
   })
   t.hasOutput('Role', { Value: 'standby' })
+  // Lambdas query the replica's index too (a live drill caught this missing).
+  const policies = JSON.stringify(t.findResources('AWS::IAM::Policy'))
+  assert.match(policies, /table\/Strata-Index\/index\/\*/)
   t.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'LedgerRecordsOverwritten' })
 })
 

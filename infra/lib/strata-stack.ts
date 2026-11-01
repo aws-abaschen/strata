@@ -190,6 +190,8 @@ export class StrataStack extends Stack {
       tableName: primary.tableName,
       tableStreamArn: stream.getResponseField('Table.LatestStreamArn'),
       encryptionKey: indexKey,
+      // Without it, grants cover the table but not queries on its index.
+      globalIndexes: ['GSI1'],
     })
   }
 
