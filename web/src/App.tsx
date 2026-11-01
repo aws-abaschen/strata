@@ -21,7 +21,7 @@ export function App() {
 }
 
 function Shell() {
-  const { user, signIn, signOut } = useAuth()
+  const { user, signIn, signOut, addPasskeyUrl, config } = useAuth()
   if (user === undefined) return <Loading />
   if (!user) {
     return (
@@ -49,6 +49,12 @@ function Shell() {
         </nav>
         <div className="account">
           <span className="muted">{(user.profile.email as string | undefined) ?? user.profile.sub}</span>
+          {/* Passkeys work in both regions; TOTP only in the primary. */}
+          {!config.devUser && (
+            <a className="btn btn-quiet" href={addPasskeyUrl}>
+              Add passkey
+            </a>
+          )}
           <CopyButton label="CLI token" text={user.id_token ?? ''} />
           <button className="btn btn-quiet" onClick={() => signOut()}>
             Sign out

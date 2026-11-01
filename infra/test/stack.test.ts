@@ -92,3 +92,18 @@ test('ledger anchors are signed by a dedicated asymmetric key, by one writer', (
   }
   template.hasResourceProperties('AWS::CloudWatch::Alarm', { MetricName: 'AnchorRuns', ComparisonOperator: 'LessThanThreshold', TreatMissingData: 'breaching' })
 })
+
+test('the user pool is ready for replication: multi-Region key, passkeys as MFA, managed login', () => {
+  template.hasResourceProperties('AWS::KMS::Key', { MultiRegion: true, EnableKeyRotation: true })
+  template.hasResourceProperties('AWS::Cognito::UserPool', {
+    MfaConfiguration: 'ON',
+    WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
+    WebAuthnUserVerification: 'required',
+    KeyConfiguration: Match.objectLike({ KeyType: 'CUSTOMER_MANAGED_KEY' }),
+    Policies: Match.objectLike({ SignInPolicy: { AllowedFirstAuthFactors: Match.arrayWith(['PASSWORD', 'WEB_AUTHN']) } }),
+  })
+  template.hasResourceProperties('AWS::Cognito::UserPoolDomain', { ManagedLoginVersion: 2 })
+  template.resourceCountIs('AWS::Cognito::ManagedLoginBranding', 1)
+  template.hasResourceProperties('AWS::Cognito::UserPoolClient', { ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_AUTH']) })
+  template.hasResourceProperties('AWS::Events::Rule', { EventPattern: Match.objectLike({ source: ['aws.kms'] }) })
+})

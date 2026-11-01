@@ -397,6 +397,19 @@ export class StrataStack extends Stack {
         description: 'Audit ledger configuration changed',
       })
     }
+    // Every store is encrypted with a key in this account; disabling or
+    // deleting one makes that store unreadable (the user pool's: nobody can
+    // sign in). Any such call pages the alarm topic.
+    new events.Rule(this, 'KeyAtRisk', {
+      eventPattern: {
+        source: ['aws.kms'],
+        detailType: ['AWS API Call via CloudTrail'],
+        detail: { eventName: ['DisableKey', 'ScheduleKeyDeletion', 'DisableKeyRotation'] },
+      },
+      targets: [new targets.SnsTopic(alarmTopic)],
+      description: 'A KMS key was disabled or scheduled for deletion',
+    })
+
     // --- Break-glass (DORA Art. 9 privileged access): every activation, early
     // end and review pages the alarm topic, and grants left unreviewed for
     // 24 hours after they end raise an alarm. ---
@@ -544,6 +557,17 @@ export class StrataStack extends Stack {
     })
 
     // --- Identity: no self sign-up; admins invite users (or federate SAML/OIDC). ---
+    // A multi-Region key, so the pool can be replicated to the standby
+    // (Cognito replicas need the same key in both Regions). Losing it locks
+    // every user out: it is retained, and any key disable or deletion alarms.
+    const userPoolKey = new kms.Key(this, 'UserPoolKey', {
+      alias: 'alias/strata-userpool',
+      description: 'Encrypts the Cognito user pool (multi-Region, replicated to the standby)',
+      multiRegion: true,
+      enableKeyRotation: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    })
+    for (const s of cognitoKeyStatements(this.account, '*')) userPoolKey.addToResourcePolicy(s)
     const users = new cognito.UserPool(this, 'Users', {
       selfSignUpEnabled: false,
       signInAliases: { email: true },
@@ -554,7 +578,17 @@ export class StrataStack extends Stack {
       mfaSecondFactor: { otp: true, sms: false },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       removalPolicy: RemovalPolicy.RETAIN,
+      featurePlan: cognito.FeaturePlan.ESSENTIALS,
+      // Passkeys (with user verification, counting as MFA) work in the
+      // standby's replica; TOTP does not. TOTP stays enabled for onboarding:
+      // a first sign-in with a temporary password still sets it up.
+      signInPolicy: { allowedFirstAuthFactors: { password: true, passkey: true } },
+      passkeyRelyingPartyId: `${props.authDomainPrefix || `strata-${this.account}`}.auth.${this.region}.amazoncognito.com`,
+      passkeyUserVerification: cognito.PasskeyUserVerification.REQUIRED,
     })
+    const cfnUsers = users.node.defaultChild as cognito.CfnUserPool
+    cfnUsers.addPropertyOverride('WebAuthnFactorConfiguration', 'MULTI_FACTOR_WITH_USER_VERIFICATION')
+    cfnUsers.addPropertyOverride('KeyConfiguration', { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: userPoolKey.keyArn })
     // Break-glass group: always allowed unless a policy explicitly forbids.
     new cognito.CfnUserPoolGroup(this, 'AdminsGroup', {
       userPoolId: users.userPoolId,
@@ -563,13 +597,19 @@ export class StrataStack extends Stack {
     })
     const domain = users.addDomain('Domain', {
       cognitoDomain: { domainPrefix: props.authDomainPrefix || `strata-${this.account}` },
+      // Managed login: passkey sign-in and registration, and the only kind
+      // of login page a replica serves.
+      managedLoginVersion: cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN,
     })
     const client = users.addClient('Web', {
       generateSecret: false,
+      // Choice-based sign-in (USER_AUTH) is what passkeys use.
+      authFlows: { user: true },
       oAuth: {
         flows: { authorizationCodeGrant: true },
         scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
-        callbackUrls: webOrigins.map((o) => `${o}/callback`),
+        // "/" is where passkey registration returns.
+        callbackUrls: webOrigins.flatMap((o) => [`${o}/callback`, `${o}/`]),
         logoutUrls: webOrigins.map((o) => `${o}/`),
       },
       idTokenValidity: Duration.hours(1),
@@ -577,7 +617,12 @@ export class StrataStack extends Stack {
       refreshTokenValidity: Duration.days(7),
       preventUserExistenceErrors: true,
     })
-    return { site, cdn, webUrl, users, domain, client }
+    new cognito.CfnManagedLoginBranding(this, 'LoginBranding', {
+      userPoolId: users.userPoolId,
+      clientId: client.userPoolClientId,
+      useCognitoProvidedValues: true,
+    })
+    return { site, cdn, webUrl, users, domain, client, userPoolKey }
   }
 
   // --- Web console files and its runtime config. ---
@@ -601,4 +646,42 @@ export class StrataStack extends Stack {
       Annotations.of(this).addWarningV2('strata:web-not-built', 'web/dist is missing: run `just build` to deploy the web console.')
     }
   }
+}
+
+/**
+ * Key policy statements that let Cognito use a customer managed key for a
+ * user pool in this account (any Region: a replica's key gets the same).
+ * Pool ARNs use a wildcard: the pool's ARN depends on the key.
+ */
+export function cognitoKeyStatements(account: string, region: string): iam.PolicyStatement[] {
+  const pools = `arn:aws:cognito-idp:${region}:${account}:userpool/*`
+  const service = [new iam.ServicePrincipal('cognito-idp.amazonaws.com'), new iam.ServicePrincipal('identitystore.amazonaws.com')]
+  const crypt = ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKeyWithoutPlaintext']
+  return [
+    new iam.PolicyStatement({
+      sid: 'CognitoService',
+      principals: service,
+      actions: crypt,
+      resources: ['*'],
+      conditions: {
+        ArnLike: { 'aws:SourceArn': pools },
+        StringEquals: { 'aws:SourceAccount': account },
+        StringLike: { 'kms:EncryptionContext:aws:cognito-idp:userpool-arn': pools },
+      },
+    }),
+    new iam.PolicyStatement({
+      sid: 'CognitoServiceDescribe',
+      principals: service,
+      actions: ['kms:DescribeKey'],
+      resources: ['*'],
+      conditions: { ArnLike: { 'aws:SourceArn': pools }, StringEquals: { 'aws:SourceAccount': account } },
+    }),
+    new iam.PolicyStatement({
+      sid: 'ViaCognito',
+      principals: [new iam.AccountPrincipal(account)],
+      actions: [...crypt, 'kms:DescribeKey'],
+      resources: ['*'],
+      conditions: { StringLike: { 'kms:ViaService': 'cognito-idp.*.amazonaws.com' } },
+    }),
+  ]
 }

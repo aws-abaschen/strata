@@ -25,6 +25,8 @@ interface AuthState {
   signIn: () => Promise<void>
   signOut: () => Promise<void>
   completeSignIn: () => Promise<string>
+  /** Managed login page where the signed-in user registers a passkey. */
+  addPasskeyUrl: string
 }
 
 const AuthContext = createContext<AuthState | null>(null)
@@ -78,6 +80,7 @@ export function AuthProvider({ config, children }: { config: Config; children: R
         const q = new URLSearchParams({ client_id: config.clientId, logout_uri: `${origin}/` })
         window.location.href = `${config.authDomain}/logout?${q}`
       },
+      addPasskeyUrl: `${config.authDomain}/passkeys/add?${new URLSearchParams({ client_id: config.clientId, redirect_uri: `${origin}/` })}`,
       completeSignIn: async () => {
         const u = await manager.signinRedirectCallback()
         return typeof u.state === 'string' && u.state.startsWith('/') ? u.state : '/'
