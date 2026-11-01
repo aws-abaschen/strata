@@ -77,6 +77,9 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Region == "" {
+		cfg.Region = *primary // STS needs one; every store call names its own
+	}
 	regions := map[string]dr.Region{}
 	for _, side := range []struct{ region, stack string }{{*primary, *primaryStack}, {*standby, *standbyStack}} {
 		r, err := region(ctx, cfg, side.region, side.stack, *primary)

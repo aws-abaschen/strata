@@ -74,10 +74,11 @@ func main() {
 	if u := os.Getenv("TSA_URL"); u != "" {
 		job.TSA = anchor.HTTPTSA{URL: u}
 	}
-	lambda.Start(func(ctx context.Context) error {
+	// The report is also the invocation's result (drills read it).
+	lambda.Start(func(ctx context.Context) (anchor.Report, error) {
 		rep, err := job.Run(ctx)
 		if err != nil {
-			return err
+			return rep, err
 		}
 		written, tsFail := 0, 0
 		if rep.Anchored > 0 {
@@ -91,7 +92,7 @@ func main() {
 		for _, n := range names {
 			metrics = append(metrics, map[string]string{"Name": n, "Unit": "Count"})
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+		return rep, json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"_aws": map[string]any{
 				"Timestamp":         time.Now().UnixMilli(),
 				"CloudWatchMetrics": []any{map[string]any{"Namespace": "Strata", "Dimensions": [][]string{{}}, "Metrics": metrics}},

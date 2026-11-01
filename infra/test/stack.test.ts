@@ -67,7 +67,7 @@ test('audit records stream to the ledger, archived under Object Lock', () => {
 })
 
 test('ledger failures and tampering raise alarms', () => {
-  template.resourceCountIs('AWS::CloudWatch::Alarm', 12)
+  template.resourceCountIs('AWS::CloudWatch::Alarm', 13)
   // Alarms can actually publish to the topic (EventBridge's policy alone shuts them out).
   template.hasResourceProperties('AWS::SNS::TopicPolicy', {
     PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({ Sid: 'CloudWatchAlarms', Principal: { Service: 'cloudwatch.amazonaws.com' }, Action: 'sns:Publish' })]) },

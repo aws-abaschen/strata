@@ -4,6 +4,28 @@
     "region": "eu-west-1",
     "authDomainPrefix": "",
     "jiraSecretArn": "",
-    "alarmEmail": "anthony@baschen.is"
+    "alarmEmail": "anthony@baschen.is",
+    "dr": {
+      "standbyRegion": "eu-central-1",
+      "primary": {
+        "region": "eu-west-1",
+        "tableName": "Strata-Index4A79713B-12O7SSE54OPC2",
+        "dataBucket": "strata-data666c94c7-nnhfn7bpbkva",
+        "dataKeyArn": "arn:aws:kms:eu-west-1:067751999967:key/e870838e-89d4-4446-8f26-2a39796042af",
+        "anchorKeyArn": "arn:aws:kms:eu-west-1:067751999967:key/d2d6c90b-ca2f-4191-a17e-e0d8007759a6",
+        "authority": "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_eQaoU7aym",
+        "clientId": "c1tes20bu6ll5k0mhu0iirdkt",
+        "apiUrl": "https://qgy6sejt3g.execute-api.eu-west-1.amazonaws.com",
+        "webUrl": "https://ddvqrgpcz2y5c.cloudfront.net"
+      },
+      "standby": {
+        "indexKeyArn": "arn:aws:kms:eu-central-1:067751999967:key/8167e5e9-379c-4a68-bdbc-81dfad58251c",
+        "dataKeyArn": "arn:aws:kms:eu-central-1:067751999967:key/6f814df7-42fd-40c7-9501-f3ad32774fd2",
+        "auditKeyArn": "arn:aws:kms:eu-central-1:067751999967:key/b38d39d8-6dc1-499b-b3e3-d1399f3facd0",
+        "dataBucket": "stratastandbybase-data666c94c7-1eh1v3c8c3rk",
+        "auditBucket": "stratastandbybase-audit3d8ade0a-slbaoqzgqj3w"
+      }
+    },
+    "@aws-cdk/aws-s3:setUniqueReplicationRoleName": true
   }
 }
