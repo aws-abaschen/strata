@@ -205,7 +205,11 @@ func region(ctx context.Context, cfg aws.Config, name, stack, primary string) (d
 func printStatus(st dr.Status, primary, standby string) {
 	for _, r := range []string{primary, standby} {
 		w := st.Writer[r]
-		fmt.Printf("%-13s sees writer %s (epoch %d)", r, w.Region, w.Epoch)
+		name := w.Region
+		if name == store.Draining {
+			name = "none (switchover draining: rerun it to resume)"
+		}
+		fmt.Printf("%-13s sees writer %s (epoch %d)", r, name, w.Epoch)
 		if !w.Since.IsZero() {
 			fmt.Printf(" since %s by %s", w.Since.Format(time.RFC3339), w.By)
 		}

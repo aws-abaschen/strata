@@ -309,3 +309,23 @@ func TestAnchorsNeverFork(t *testing.T) {
 		t.Fatalf("forked anchor: %v", err)
 	}
 }
+
+// The DR chain (writer changes, drills) is anchored like the others, and its
+// name cannot be taken by a repository.
+func TestDRChainIsAnchored(t *testing.T) {
+	f := newFixture(t)
+	e, _ := core.NewAuditEntry("WriterInitialized", "ops", f.now, map[string]string{"region": "eu-west-1"})
+	if err := f.mem.AppendAudit(f.ctx, core.DRChain, e); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.job.Run(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := f.mem.ListAnchorProofs(f.ctx, core.DRChain, 0, 10)
+	if len(ps) != 1 || ps[0].Leaf.Repo != core.DRChain {
+		t.Fatalf("DR chain proofs: %+v", ps)
+	}
+	if err := core.ValidateRepoName(core.DRChain); !errors.Is(err, core.ErrInvalid) {
+		t.Fatalf("a repository may be named %s: %v", core.DRChain, err)
+	}
+}

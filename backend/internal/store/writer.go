@@ -32,6 +32,10 @@ type Writer struct {
 	Reason string    `json:"reason,omitempty"`
 }
 
+// Draining is the writer region while a switchover waits for the target to
+// catch up: no region writes.
+const Draining = ""
+
 // ErrNotWriter means this region is not the writer.
 var ErrNotWriter = errors.New("not the writer region")
 
@@ -42,6 +46,9 @@ type NotWriterError struct {
 }
 
 func (e *NotWriterError) Error() string {
+	if e.Writer.Region == Draining {
+		return fmt.Sprintf("%s is not the writer region: writes are paused while the writer changes (epoch %d); retry in a minute", e.Here, e.Writer.Epoch)
+	}
 	return fmt.Sprintf("%s is not the writer region: writes go to %s (epoch %d)", e.Here, e.Writer.Region, e.Writer.Epoch)
 }
 
@@ -97,7 +104,7 @@ func (s ChainState) Consistent() bool {
 }
 
 // DRChain is the ledger of writer changes (switchovers, promotions, drills).
-const DRChain = "strata-dr"
+const DRChain = core.DRChain
 
 // --- DynamoDB ---
 

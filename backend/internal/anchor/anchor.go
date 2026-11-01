@@ -173,7 +173,7 @@ func (j *Job) heads(ctx context.Context) ([]core.AnchorLeaf, error) {
 	if err != nil {
 		return nil, err
 	}
-	names := []string{core.BreakGlassChain}
+	names := []string{core.BreakGlassChain, core.DRChain}
 	for _, r := range repos {
 		names = append(names, r.Name)
 	}

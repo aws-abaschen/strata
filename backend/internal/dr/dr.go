@@ -250,23 +250,33 @@ func Switchover(ctx context.Context, from, to Region, op Op, timeout time.Durati
 		return res, err
 	}
 	cur := st.Writer[from.Name]
-	if cur.Region != from.Name {
+	if t := st.Writer[to.Name]; cur.Region == from.Name && (t.Epoch != cur.Epoch || t.Region != cur.Region) {
+		return res, fmt.Errorf("the regions disagree on the writer (%s sees %q epoch %d, %s sees %q epoch %d): run status", from.Name, cur.Region, cur.Epoch, to.Name, t.Region, t.Epoch)
+	}
+	drain := store.Writer{Region: store.Draining, Epoch: cur.Epoch + 1, Since: op.now().UTC(), By: op.Actor,
+		Reason: fmt.Sprintf("switchover %s to %s: %s (%s)", from.Name, to.Name, op.Reason, op.WorkItem)}
+	switch cur.Region {
+	case from.Name:
+		// 1. Drain: no region is the writer, so writes stop in From now and
+		// To cannot take any until it holds everything. (Naming To here
+		// would let it write as soon as this one item replicates, at stale
+		// heads, and the old writer's 421s would send clients to it.)
+		if err := from.Meta.SetWriter(ctx, drain, cur.Epoch); err != nil {
+			return res, fmt.Errorf("demote %s: %w", from.Name, err)
+		}
+		op.logf("%s demoted at %s (epoch %d): writes are paused in both regions", from.Name, drain.Since.Format(time.RFC3339), drain.Epoch)
+	case store.Draining:
+		// An earlier switchover stopped while draining: carry on from there.
+		drain = cur
+		op.logf("resuming the switchover drained at %s (epoch %d)", cur.Since.Format(time.RFC3339), cur.Epoch)
+	default:
 		return res, fmt.Errorf("%s is not the writer (it sees %s, epoch %d)", from.Name, cur.Region, cur.Epoch)
 	}
-	if t := st.Writer[to.Name]; t.Epoch != cur.Epoch {
-		return res, fmt.Errorf("the regions disagree on the writer (%s epoch %d, %s epoch %d): run status", from.Name, cur.Epoch, to.Name, t.Epoch)
-	}
+	res.DemotedAt = drain.Since
 
-	// 1. Demote: writes in From stop now (their fence reads From's item).
-	next := store.Writer{Region: to.Name, Epoch: cur.Epoch + 1, API: to.API, Since: op.now().UTC(), By: op.Actor, Reason: op.Reason + " (" + op.WorkItem + ")"}
-	if err := from.Meta.SetWriter(ctx, next, cur.Epoch); err != nil {
-		return res, fmt.Errorf("demote %s: %w", from.Name, err)
-	}
-	res.DemotedAt, res.Epoch = next.Since, next.Epoch
-	op.logf("%s demoted at %s (epoch %d): writes there now fail", from.Name, res.DemotedAt.Format(time.RFC3339), next.Epoch)
-
-	// 2. Wait until To holds everything. The writer item arriving proves
-	// nothing about other items: replication has no order across items.
+	// 2. Wait until To holds everything, the drained writer item included.
+	// That item arriving proves nothing about other items: replication has
+	// no order across items.
 	poll := op.Poll
 	if poll == 0 {
 		poll = 2 * time.Second
@@ -277,11 +287,11 @@ func Switchover(ctx context.Context, from, to Region, op Op, timeout time.Durati
 		if err != nil {
 			return res, err
 		}
-		if st.InSync && st.Writer[to.Name].Epoch == next.Epoch {
+		if st.InSync && st.Writer[to.Name].Epoch == drain.Epoch {
 			break
 		}
 		if op.now().After(deadline) {
-			return res, fmt.Errorf("%s not in sync after %s, writes are stopped in both regions; fix and rerun switchover from %s, or promote: %v", to.Name, timeout, to.Name, st.Problems)
+			return res, fmt.Errorf("%s not in sync after %s; writes stay paused in both regions: rerun switchover to resume, or promote: %v", to.Name, timeout, st.Problems)
 		}
 		op.logf("waiting for %s: %v", to.Name, st.Problems)
 		select {
@@ -290,6 +300,14 @@ func Switchover(ctx context.Context, from, to Region, op Op, timeout time.Durati
 		case <-time.After(poll):
 		}
 	}
+
+	// 3. Only now name To the writer, in To, with compare-and-swap on the
+	// drained epoch. From learns it through replication.
+	next := store.Writer{Region: to.Name, Epoch: drain.Epoch + 1, API: to.API, Since: op.now().UTC(), By: op.Actor, Reason: op.Reason + " (" + op.WorkItem + ")"}
+	if err := to.Meta.SetWriter(ctx, next, drain.Epoch); err != nil {
+		return res, fmt.Errorf("make %s the writer: %w", to.Name, err)
+	}
+	res.Epoch = next.Epoch
 
 	// 3. To writes from here. Record it there, as the first write.
 	res.WritableAt = op.now().UTC()

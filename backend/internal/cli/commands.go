@@ -60,6 +60,8 @@ Jira keys in the message (PAY-42 ...) are linked automatically.
 Environment:
   STRATA_API     API URL (else taken from the working copy, or --api)
   STRATA_TOKEN   bearer token (an ID token from the web console)
+  STRATA_PEER_APIS  other regions' API URLs (comma-separated): a standby's
+                 "not the writer" answer is followed only to one of these
 `
 
 type multi []string
@@ -115,6 +117,11 @@ func (e Env) client(api string) (*Client, error) {
 		return nil, errors.New("no API URL: set STRATA_API or pass --api")
 	}
 	c := &Client{API: api, Token: e.Getenv("STRATA_TOKEN")}
+	for _, p := range strings.Split(e.Getenv("STRATA_PEER_APIS"), ",") {
+		if p = strings.TrimRight(strings.TrimSpace(p), "/"); p != "" {
+			c.Peers = append(c.Peers, p)
+		}
+	}
 	if e.Client != nil {
 		c.HTTP = e.Client.HTTP
 	}

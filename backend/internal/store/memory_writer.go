@@ -225,3 +225,16 @@ func (m *Memory) ReplayRecord(r core.AuditRecord) {
 	slices.SortFunc(a, func(x, y core.AuditRecord) int { return int(x.Seq - y.Seq) })
 	m.audits[r.Repo] = a
 }
+
+// ReplicateWriterTo copies only the writer item, as replication may deliver
+// it before anything else (tests).
+func (m *Memory) ReplicateWriterTo(dst *Memory) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dst.mu.Lock()
+	defer dst.mu.Unlock()
+	if m.writer != nil {
+		w := *m.writer
+		dst.writer = &w
+	}
+}

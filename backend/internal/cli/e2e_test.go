@@ -28,6 +28,7 @@ type harness struct {
 	mem    *store.Memory
 	events *recorder
 	skew   atomic.Int64 // added to the server clock, in nanoseconds
+	env    map[string]string
 }
 
 // newHarness serves the API and the memory store's upload URLs. The bearer
@@ -66,7 +67,7 @@ func (h *harness) run(dir, user string, args ...string) (string, int) {
 		case "STRATA_TOKEN":
 			return user
 		}
-		return ""
+		return h.env[k]
 	}}
 	code := cli.Run(context.Background(), args, env)
 	return out.String(), code

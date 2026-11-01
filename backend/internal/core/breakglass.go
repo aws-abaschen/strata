@@ -9,6 +9,10 @@ import (
 // not a valid repository name, so it never collides with a repository.
 const BreakGlassChain = "_breakglass"
 
+// DRChain records writer changes between regions (switchovers, promotions,
+// drills). Its name is reserved: no repository may take it.
+const DRChain = "strata-dr"
+
 // Break-glass limits.
 const (
 	BreakGlassDefault = time.Hour

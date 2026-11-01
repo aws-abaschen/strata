@@ -23,6 +23,14 @@ func TestCLIFollowsTheWriter(t *testing.T) {
 	}
 	const ana = "ana@example.com"
 
+	// The writer URL comes from a table item: it is followed only to a
+	// known peer, never wherever the item says.
+	out, code := central.run(t.TempDir(), ana, "repo", "create", "payments")
+	if code == 0 || !strings.Contains(out, "STRATA_PEER_APIS") || !strings.Contains(out, west.srv.URL) {
+		t.Fatalf("followed an unlisted writer URL (exit %d):\n%s", code, out)
+	}
+	central.env = map[string]string{"STRATA_PEER_APIS": west.srv.URL}
+
 	// Writes sent to the standby end up in the writer, uploads included.
 	dir := t.TempDir()
 	central.ok(dir, ana, "repo", "create", "payments")
@@ -48,7 +56,7 @@ func TestCLIFollowsTheWriter(t *testing.T) {
 
 	// Without a writer URL to follow, the standby's refusal is clear.
 	central.mem.SetWriter(context.Background(), store.Writer{Region: "eu-west-1", Epoch: 2}, 1)
-	out, code := central.run(dir, ana, "annotate", "--note", "x")
+	out, code = central.run(dir, ana, "annotate", "--note", "x")
 	if code == 0 || !strings.Contains(out, "eu-central-1 is not the writer region") {
 		t.Fatalf("standby without writer URL (exit %d):\n%s", code, out)
 	}

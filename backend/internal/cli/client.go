@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/aws-abaschen/strata/backend/internal/core"
@@ -23,6 +24,11 @@ type Client struct {
 	API   string
 	Token string
 	HTTP  *http.Client
+	// Peers are the other regions' API URLs (STRATA_PEER_APIS). A 421 is
+	// followed only to one of them: the writer URL comes from a table item,
+	// and following it blindly would hand the bearer token to anyone who can
+	// write that item.
+	Peers []string
 }
 
 // APIError is a non-2xx answer.
@@ -48,6 +54,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	// A standby region answers writes with 421 and the writer's API: follow
 	// it once, and keep using it (later calls of this command go there too).
 	if errors.As(err, &ae) && ae.Status == http.StatusMisdirectedRequest && ae.WriterAPI != "" && ae.WriterAPI != c.API {
+		if !slices.Contains(c.Peers, strings.TrimRight(ae.WriterAPI, "/")) {
+			return fmt.Errorf("%w (set STRATA_API to %s, or list it in STRATA_PEER_APIS to follow automatically)", err, ae.WriterAPI)
+		}
 		c.API = ae.WriterAPI
 		return c.do1(ctx, method, path, in, out)
 	}

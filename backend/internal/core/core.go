@@ -66,6 +66,9 @@ func ValidateRepoName(n string) error {
 	if !repoRe.MatchString(n) {
 		return invalid("repository name %q: use 2-63 lowercase letters, digits or dashes", n)
 	}
+	if n == DRChain {
+		return invalid("repository name %q is reserved", n)
+	}
 	return nil
 }
 

@@ -93,7 +93,7 @@ func TestSwitchoverAndBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Epoch != 2 || !res.OldFenced || res.WritesUnavailable == "" || res.Objects != 1 {
+	if res.Epoch != 3 || !res.OldFenced || res.WritesUnavailable == "" || res.Objects != 1 {
 		t.Fatalf("result %+v", res)
 	}
 	// central writes now, west refuses.
@@ -110,7 +110,12 @@ func TestSwitchoverAndBack(t *testing.T) {
 		t.Fatalf("DR chain: %+v", last)
 	}
 
-	// And back: replication now runs the other way.
+	// And back: replication now runs the other way. Switchover refuses until
+	// the old writer has seen the new writer record.
+	if _, err := dr.Switchover(ctx, central, west, op, time.Second); err == nil || !strings.Contains(err.Error(), "disagree") {
+		t.Fatalf("switchback before replication: %v", err)
+	}
+	b.ReplicateTo(a)
 	if _, err := dr.Switchover(ctx, central, west, replicating(b, a), 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -246,4 +251,68 @@ type unreachable struct{ *store.Memory }
 func (unreachable) SetWriter(ctx context.Context, _ store.Writer, _ int64) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// While a switchover drains, no region writes, even once the writer item has
+// reached the target ahead of everything else; the target writes only after
+// it holds everything.
+func TestSwitchoverDrainsBeforeTheTargetWrites(t *testing.T) {
+	a, b, west, central := pair()
+	ctx := context.Background()
+	dr.Init(ctx, west, op)
+	write(t, a, 3)
+	a.ReplicateTo(b)
+	write(t, a, 2) // not yet replicated
+
+	o := op
+	var during []error
+	waits := 0
+	o.Log = func(format string, _ ...any) {
+		if !strings.HasPrefix(format, "waiting") {
+			return
+		}
+		waits++
+		if waits == 1 {
+			a.ReplicateWriterTo(b) // the writer item arrives first
+			during = append(during, b.AppendAudit(ctx, "payments", entry(t, "ChangeAnnotated")), a.AppendAudit(ctx, "payments", entry(t, "ChangeAnnotated")))
+			if err := b.Writable(ctx); err == nil || !strings.Contains(err.Error(), "paused") {
+				t.Errorf("standby upload URLs while draining: %v", err)
+			}
+			return
+		}
+		a.ReplicateTo(b)
+	}
+	res, err := dr.Switchover(ctx, west, central, o, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range during {
+		if !errors.Is(e, store.ErrNotWriter) {
+			t.Fatalf("a region wrote while draining: %v", e)
+		}
+	}
+	if res.Epoch != 3 {
+		t.Fatalf("epoch %d, want 3 (drained at 2)", res.Epoch)
+	}
+	write(t, b, 1)
+	if n := len(verifyChain(t, b, "payments")); n != 6 {
+		t.Fatalf("%d records, want 6: nothing lost, nothing forked", n)
+	}
+}
+
+// A switchover stopped while draining resumes when run again.
+func TestSwitchoverResumesAfterTimeout(t *testing.T) {
+	a, b, west, central := pair()
+	ctx := context.Background()
+	dr.Init(ctx, west, op)
+	write(t, a, 2)
+	a.ReplicateTo(b)
+	if _, err := dr.Switchover(ctx, west, central, op, 20*time.Millisecond); err == nil {
+		t.Fatal("switchover without replication succeeded")
+	}
+	if _, err := dr.Switchover(ctx, west, central, replicating(a, b), 5*time.Second); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	write(t, b, 1)
+	verifyChain(t, b, "payments")
 }
