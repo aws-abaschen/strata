@@ -222,7 +222,7 @@ export class StrataStack extends Stack {
     const web = standby ? undefined : this.webAndIdentity(props, data as s3.Bucket)
     const webUrl = web?.webUrl ?? standby!.primary.webUrl
     const webOrigins = [webUrl, 'http://localhost:5173']
-    const authority = web?.users.userPoolProviderUrl ?? standby!.primary.authority
+    const authority = web?.issuer ?? standby!.primary.authority
     const clientId = web?.client.userPoolClientId ?? standby!.primary.clientId
 
     // --- Lambdas (Go, arm64, built into backend/dist by `just build`). ---
@@ -589,6 +589,10 @@ export class StrataStack extends Stack {
     const cfnUsers = users.node.defaultChild as cognito.CfnUserPool
     cfnUsers.addPropertyOverride('WebAuthnFactorConfiguration', 'MULTI_FACTOR_WITH_USER_VERIFICATION')
     cfnUsers.addPropertyOverride('KeyConfiguration', { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: userPoolKey.keyArn })
+    // The updated issuer serves the same signing keys from several Regions,
+    // so both Regions' APIs validate tokens without depending on this one.
+    cfnUsers.addPropertyOverride('IssuerConfiguration', { Type: 'UPDATED' })
+    const issuer = `https://issuer-cognito-idp.${this.region}.amazonaws.com/${users.userPoolId}`
     // Break-glass group: always allowed unless a policy explicitly forbids.
     new cognito.CfnUserPoolGroup(this, 'AdminsGroup', {
       userPoolId: users.userPoolId,
@@ -622,7 +626,7 @@ export class StrataStack extends Stack {
       clientId: client.userPoolClientId,
       useCognitoProvidedValues: true,
     })
-    return { site, cdn, webUrl, users, domain, client, userPoolKey }
+    return { site, cdn, webUrl, users, domain, client, userPoolKey, issuer }
   }
 
   // --- Web console files and its runtime config. ---
@@ -630,7 +634,7 @@ export class StrataStack extends Stack {
     const webDist = path.join(root, 'web/dist')
     const config = {
       apiUrl,
-      authority: web.users.userPoolProviderUrl,
+      authority: web.issuer,
       clientId: web.client.userPoolClientId,
       authDomain: web.domain.baseUrl(),
     }

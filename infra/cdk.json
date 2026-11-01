@@ -13,7 +13,7 @@
         "dataBucket": "strata-data666c94c7-nnhfn7bpbkva",
         "dataKeyArn": "arn:aws:kms:eu-west-1:067751999967:key/e870838e-89d4-4446-8f26-2a39796042af",
         "anchorKeyArn": "arn:aws:kms:eu-west-1:067751999967:key/d2d6c90b-ca2f-4191-a17e-e0d8007759a6",
-        "authority": "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_eQaoU7aym",
+        "authority": "https://issuer-cognito-idp.eu-west-1.amazonaws.com/eu-west-1_eQaoU7aym",
         "clientId": "c1tes20bu6ll5k0mhu0iirdkt",
         "apiUrl": "https://qgy6sejt3g.execute-api.eu-west-1.amazonaws.com",
         "webUrl": "https://ddvqrgpcz2y5c.cloudfront.net"
