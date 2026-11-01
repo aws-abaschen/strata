@@ -382,17 +382,22 @@ regions writing at once would fork every audit chain: last writer wins would
 keep one of two records with the same seq. So exactly one region writes. The
 item `SYSTEM/WRITER {region, epoch}` names it, and every audited write checks
 it with a `ConditionCheck` in its own transaction, as does every upload URL.
-A region that is not the writer answers 421 with the writer's API URL, and the
-CLI follows it once. Reads work in both regions.
+A region that is not the writer answers 421 with the writer's API URL. The CLI
+follows it once, but only to a URL listed in `STRATA_PEER_APIS`: the URL comes
+from a table item and the request carries the user's token. Reads work in both
+regions.
 
 **Changing the writer** (`strata-dr`, with AWS credentials, never the Strata API,
 whose sign-in lives in the failed region):
 
-- `switchover` (planned: drills, failback). Demote the writer first, so writes
-  stop there at once. Then wait until the target holds the new writer item,
-  every chain's head and records with the same hashes, and every object. The
-  writer item arriving proves nothing about other items: replication has no
-  order across items. Then the target writes. No data is lost.
+- `switchover` (planned: drills, failback). First set the writer to none
+  (draining), so writes stop in every region at once. Then wait until the
+  target holds that writer item, every chain's head and records with the same
+  hashes, and every object. Only then name the target the writer, in the
+  target, with compare-and-swap on the drained epoch. Naming the target at the
+  start would let it write as soon as that one item replicated, at heads still
+  behind: replication has no order across items. No data is lost. A switchover
+  stopped while draining resumes when run again.
 - `promote --force` (the writer region is down). Try to demote it, take the
   writer locally, then repair chains that hold part of a transaction:
   - a head whose records never arrived: the chain continues from the last
@@ -416,9 +421,11 @@ reports the records its archive has and the table lost.
 
 **Drilled live** (`just dr-drill`, 2026-11-01): eu-west-1 to eu-central-1 and back,
 with writes in each phase, an anchor signed in eu-central-1, and an export verified
-against the pinned key that holds changes written in both regions. Writes were
-unavailable for 20.4 s and 19.7 s (the first run, which also waited for fresh
-objects to replicate, took 54.8 s); no data was lost. Forced promotion and chain
+against the pinned key that holds changes written in both regions. With the
+draining handover, writes were unavailable for 20.0 s each way; no data was lost.
+An earlier run, before draining, also took 20 s (54.8 s once, waiting for fresh
+objects to replicate). The first run stopped at a real bug, the standby's IAM
+grants missing the table index, which is how drills earn their keep. Forced promotion and chain
 repair are tested against simulated partial replication only: they cannot be
 drilled without losing a region.
 
@@ -444,6 +451,12 @@ drilled without losing a region.
 - **Clients pick a region.** There is no shared API domain. The 421 follow covers
   writes; reads from the standby can lag by seconds. The web console runs in the
   primary only.
+- **The fence needs its region.** Lambdas get `STRATA_REGION`; a store built
+  without one (local runs, `TestDeployedStack`) writes unfenced, so run those
+  only while eu-west-1 is the writer.
+- **Switchover lists both buckets** on every check, every 2 seconds. That is fine
+  at thousands of objects; millions need S3 replication metrics or inventories
+  instead.
 - **Cost.** DynamoDB writes roughly double (replicated writes), plus S3
   replication transfer and the standby's idle Lambdas and keys.
 

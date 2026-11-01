@@ -160,7 +160,8 @@ cd backend && go run ./cmd/strata-dr switchover --to eu-west-1 --reason "failbac
 just dr-drill                          # the whole drill as a test, against the deployed stacks
 ```
 
-`strata-dr` uses your AWS credentials, not the Strata API. If eu-west-1 is down,
+Clients set `STRATA_PEER_APIS` to both regions' API URLs: a region that is not the writer answers
+421, and the CLI follows it only to a listed URL. `strata-dr` uses your AWS credentials, not the Strata API. If eu-west-1 is down,
 `strata-dr promote --to eu-central-1 --force --reason ... --work-item ...` takes the writer
 and repairs partly replicated chains; what was lost is recorded in the ledger. Deploying a
 standby from scratch: `StrataStandbyBase`, then its outputs into `dr.standby` in
