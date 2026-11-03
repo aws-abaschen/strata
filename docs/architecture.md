@@ -544,3 +544,6 @@ The order and the reasons are in [roadmap.md](roadmap.md).
 - **Permissions**: repository-level today. Next: path-level rules (the changed paths
   of a push in the Cedar context) and a Cedar schema to validate policies.
 - **Git bridge** (live, two-way; one-way export is done; first step is a mirror mode in front of the incumbent host), **semantic search**, **KMS per-object keys**, **Object Lock retention**.
+- **Pipelines** (roadmap): centralized pipeline configuration, defined once and inherited
+  through Layers like any other locked/override/append file, with AWS Lambda micro VMs
+  (Firecracker-backed) as the job runners.

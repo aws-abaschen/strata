@@ -33,6 +33,7 @@ Roadmap: [docs/roadmap.md](docs/roadmap.md).
 | Disaster recovery: warm standby in eu-central-1 (global table, two-way object replication, its own audit archive), one writer fenced in every write transaction, `strata-dr switchover` drilled live (about 20 s of no writes, no data loss) and `promote --force` with chain repair; Cognito user pool replicated with automatic sign-in failover (passkeys as MFA), drilled | done |
 | Branch merges in the web console, wave rollouts, Git bridge | next |
 | Agent scale: signed provenance per change, agent classes with a sponsor and kill switch, Layers as signed capability grants, segment storage, query API, mirror mode | planned, see [docs/roadmap.md](docs/roadmap.md) |
+| Centralized pipeline configuration (defined once, inherited through Layers) with AWS Lambda micro VMs as runners | roadmap |
 
 ## Layout
 
