@@ -371,6 +371,7 @@ can be restored somewhere else. Strata keeps a warm standby in `eu-central-1`.
 | Data objects and sealed changes | S3 replication to the standby | S3 replication back to the primary |
 | Audit archive (Object Lock) | built by this region's ledger from its stream | built by the standby's ledger from its own stream |
 | Anchors | signed by the writer region | signed by the writer region, with the primary's KMS key |
+| Sign-in (Cognito) | primary user pool, multi-Region KMS key | replica of the same pool (same ID and issuer), activated, served automatically when the primary fails |
 
 Each region archives every audit record but publishes only the records it
 wrote (an unhashed `region` attribute on each audit item), so integrations get
@@ -414,6 +415,31 @@ Every writer change is recorded on the `strata-dr` chain with the IAM principal,
 reason, work item and how long writes were unavailable. That chain is anchored
 like any other, so drills are evidence.
 
+**Sign-in fails over by itself.** The user pool has a replica in
+eu-central-1 with the same pool ID, encrypted with a replica of the same
+multi-Region key. Tokens carry Cognito's updated issuer
+(`https://issuer-cognito-idp.eu-west-1.amazonaws.com/<pool>`), whose signing
+keys Cognito serves from several Regions, so both Regions' APIs and the web
+console validate the same tokens. A Route 53 health check on the primary's
+Cognito endpoint drives the login domain: while it fails, the same domain
+signs users in from the replica. Moving the Strata writer stays a separate,
+human decision (`strata-dr`): automatic promotion during a partition is how
+two writers happen.
+
+Replicas do not support TOTP, so sign-in uses passkeys with user
+verification, which count as MFA. Onboarding: an admin creates the user, the
+first sign-in with the temporary password sets up TOTP (required MFA), the
+user registers a passkey from the console's **Add passkey** link and signs in
+with it, then an admin removes TOTP
+(`aws cognito-idp admin-set-user-mfa-preference --software-token-mfa-settings Enabled=false,PreferredMfa=false`).
+Until then that user can sign in only while the primary is up.
+
+Drilled live on 2026-11-03: with the health check inverted, the login domain
+served a passkey sign-in from eu-central-1 (CloudTrail there shows
+`login_passkey_POST` then `Token_POST`; nothing in eu-west-1). To repeat:
+`aws route53 update-health-check --health-check-id <CognitoHealthCheckId> --inverted`,
+sign in, then `--no-inverted`.
+
 **Detection.** An audit item is written once. A MODIFY or REMOVE of one on either
 stream means two regions wrote the same seq, or tampering, and raises
 `LedgerForkAlarm`. After a forced promotion, the old region's reconciler also
@@ -431,9 +457,11 @@ drilled without losing a region.
 
 **Limits**
 
-- **Identity is regional.** Cognito user pools do not replicate. The standby
-  accepts the primary pool's tokens, which works for drills but not while
-  eu-west-1 is down. Production federates an IdP that outlives a region.
+- **Sign-in replicates, account changes do not.** The Cognito replica signs
+  users in, but new users, password resets and profile changes need the
+  primary. TOTP does not work in the replica, so every user must have a
+  passkey and no TOTP (see below). A federated IdP would also need to outlive
+  the region.
 - **No anchors while eu-west-1 is down.** The anchor key is single-region (a key
   cannot be made multi-region after creation), so the standby signs with it
   cross-region. During an outage `AnchorStalledAlarm` fires and anchoring resumes

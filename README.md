@@ -29,7 +29,7 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Break-glass: no standing admin access; time-boxed grants (ticket, scope, max 4h, fresh MFA), enforced outside Cedar so no policy can lock everyone out, every use tagged in the ledger, reviewed by another admin, alerted, overdue reviews alarmed | done |
 | `strata pull`: three-way merge of your edits with the server's latest (line-level for text, conflict markers, push blocked until resolved) | done |
 | Exit: `strata export` writes a repository as plain Git plus an evidence sidecar (sealed changes, trees, ledger, anchors, annotations, approvals); `strata export verify` and an independent Python verifier prove it complete and unaltered, offline ([format](docs/export-format.md)) | done |
-| Disaster recovery: warm standby in eu-central-1 (global table, two-way object replication, its own audit archive), one writer fenced in every write transaction, `strata-dr switchover` drilled live (about 20 s of no writes, no data loss) and `promote --force` with chain repair | done |
+| Disaster recovery: warm standby in eu-central-1 (global table, two-way object replication, its own audit archive), one writer fenced in every write transaction, `strata-dr switchover` drilled live (about 20 s of no writes, no data loss) and `promote --force` with chain repair; Cognito user pool replicated with automatic sign-in failover (passkeys as MFA), drilled | done |
 | Branch merges in the web console, wave rollouts, Git bridge | next |
 
 ## Layout
@@ -70,7 +70,9 @@ handler with an in-memory store (`backend/internal/cli/e2e_test.go`).
 After `just deploy`:
 
 1. Create a user in the Cognito user pool (self sign-up is off), then sign in to the
-   web console (`WebUrl` output).
+   web console (`WebUrl` output). The first sign-in sets up an authenticator app (MFA is
+   required); then click **Add passkey**, sign in with the passkey, and have an admin remove
+   the TOTP so the user can also sign in from the standby region.
 2. Click **CLI token** in the console header and export it:
 
 ```sh
@@ -168,6 +170,11 @@ standby from scratch: `StrataStandbyBase`, then its outputs into `dr.standby` in
 `infra/cdk.json`, `Strata` (once with `-c drDataReplication=false` to add the table replica
 alone), `StrataStandby`, `just dr-backfill`, `strata-dr init`. See
 [docs/architecture.md](docs/architecture.md#disaster-recovery-a-warm-standby-with-one-writer).
+
+Sign-in fails over on its own: the Cognito user pool has a replica in eu-central-1, and a
+Route 53 health check switches the login domain to it. Replicas do not support TOTP, so every
+user needs a passkey (console header: **Add passkey**) and, once it works, an admin removes
+their TOTP. See [docs/architecture.md](docs/architecture.md#disaster-recovery-a-warm-standby-with-one-writer).
 
 ### Jira
 
