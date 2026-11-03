@@ -93,6 +93,11 @@ func (m *Memory) Put(repo string, b []byte) core.Hash {
 	return h
 }
 
+// PutObject implements Objects.
+func (m *Memory) PutObject(_ context.Context, repo string, b []byte) (core.Hash, error) {
+	return m.Put(repo, b), nil
+}
+
 // PresignPut implements Objects.
 func (m *Memory) PresignPut(_ context.Context, repo string, h core.Hash, _ int64) (Upload, error) {
 	return Upload{Hash: h, Method: http.MethodPut, URL: m.BaseURL + "/_objects/" + repo + "/" + string(h), Headers: map[string]string{}}, nil
