@@ -752,9 +752,16 @@ func printMerge(out io.Writer, res MergeResult, source, target string, dry bool)
 			fmt.Fprintf(out, "ask a colleague: strata approve %s\nthen: strata promote %s --ref %s\n", res.Change.Revision, res.Change.Revision.Short(), target)
 		}
 	case "conflicts":
-		fmt.Fprintf(out, "%d conflicts: %s does not merge cleanly into %s\n", len(res.Conflicts), source, target)
+		fmt.Fprintf(out, "%s: %s does not merge cleanly into %s\n", plural(len(res.Conflicts), "conflict"), source, target)
 	default:
 		fmt.Fprintf(out, "merge: %s\n", res.Status)
 	}
 	return nil
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }

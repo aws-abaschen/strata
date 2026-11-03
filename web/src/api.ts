@@ -150,10 +150,37 @@ export interface ChangeSummary {
   via: 'change' | 'annotation'
 }
 
+export interface Conflict {
+  path: string
+  reason: string
+}
+
+/** Reply of POST /repos/{repo}/merge. */
+export interface MergeResult {
+  status: 'up-to-date' | 'fast-forward' | 'merged' | 'conflicts'
+  source: Hash
+  target: Hash
+  base?: Hash
+  into: string
+  conflicts: Conflict[]
+  ref?: Ref
+  change?: Change
+}
+
+export interface MergeRequest {
+  source: string
+  target: string
+  into?: string
+  message?: string
+  dryRun?: boolean
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The parsed JSON reply, when there was one. */
+    readonly body?: unknown,
   ) {
     super(message)
   }
@@ -180,12 +207,14 @@ export class Api {
     if (!res.ok) {
       const text = await res.text()
       let msg = text
+      let body: unknown
       try {
-        msg = (JSON.parse(text) as { error?: string; message?: string }).error ?? msg
+        body = JSON.parse(text)
+        msg = (body as { error?: string }).error ?? msg
       } catch {
         // not JSON
       }
-      throw new ApiError(res.status, msg || res.statusText)
+      throw new ApiError(res.status, msg || res.statusText, body)
     }
     return (await res.json()) as T
   }
@@ -214,6 +243,18 @@ export class Api {
     this.call<Annotation>('POST', `/repos/${enc(repo)}/changes/${rev}/annotations`, { note, metadata })
   approve = (repo: string, rev: Hash, note: string) =>
     this.call<Approval>('POST', `/repos/${enc(repo)}/changes/${rev}/approvals`, { note })
+  moveRef = (repo: string, name: string, target: Hash, expected: Hash) =>
+    this.call<Ref>('PUT', `/repos/${enc(repo)}/refs/${name.split('/').map(enc).join('/')}`, { target, expected })
+  /** Merges on the server. Conflicts come back as a result, not an error. */
+  merge = async (repo: string, req: MergeRequest): Promise<MergeResult> => {
+    try {
+      return await this.call<MergeResult>('POST', `/repos/${enc(repo)}/merge`, req)
+    } catch (e) {
+      const body = e instanceof ApiError ? (e.body as MergeResult | undefined) : undefined
+      if (e instanceof ApiError && e.status === 409 && body?.status === 'conflicts') return body
+      throw e
+    }
+  }
   findWorkItem = (w: WorkItem) =>
     this.call<{ workItem: WorkItem; changes: ChangeSummary[] }>('GET', `/work-items/${enc(w.system)}/${enc(w.key)}`)
   findLabel = (label: string) =>

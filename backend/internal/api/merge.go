@@ -408,7 +408,7 @@ func (m *treeMerger) file(p string, base, ours, theirs *core.TreeEntry) (*core.T
 		m.conflict(p, "changed on both sides and too large to merge on the server")
 		return ours, nil
 	case n > 0:
-		m.conflict(p, fmt.Sprintf("both sides changed the same lines (%d places)", n))
+		m.conflict(p, "both sides changed the same lines")
 		return ours, nil
 	}
 	h, err := m.put(merged)
