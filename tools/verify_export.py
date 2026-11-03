@@ -89,7 +89,7 @@ def root_from_proof(h, index, size, proof):
     if index >= size:
         raise Failed("anchor proof index out of range")
     fn, sn = index, size - 1
-    for p in proof:
+    for p in proof or []:  # a one-leaf tree has no siblings: null or []
         p = bytes.fromhex(p)
         if sn == 0:
             raise Failed("anchor proof too long")
