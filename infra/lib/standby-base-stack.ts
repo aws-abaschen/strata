@@ -24,6 +24,8 @@ export interface PrimaryRefs {
   userPoolId?: string
   /** The pool's multi-Region KMS key; the standby gets its replica. */
   userPoolKeyArn?: string
+  /** The multi-Region anchor signing key; the standby gets its replica. */
+  anchorKeyMrArn?: string
 }
 
 export interface StandbyBaseStackProps extends StackProps {
@@ -101,6 +103,20 @@ export class StandbyBaseStack extends Stack {
       })
       replicaKey.applyRemovalPolicy(RemovalPolicy.RETAIN)
       new CfnOutput(this, 'UserPoolKeyReplicaArn', { value: replicaKey.attrArn })
+    }
+
+    // The anchor signing key's replica: the standby signs anchors with it,
+    // in this Region, under the same public key.
+    if (props.primary.anchorKeyMrArn) {
+      const anchorReplica = new kms.CfnReplicaKey(this, 'AnchorKeyReplica', {
+        primaryKeyArn: props.primary.anchorKeyMrArn,
+        keyPolicy: new iam.PolicyDocument({
+          statements: [new iam.PolicyStatement({ sid: 'Admins', principals: [new iam.AccountRootPrincipal()], actions: ['kms:*'], resources: ['*'] })],
+        }),
+        description: 'Replica of the anchor signing key (the standby signs anchors with it)',
+      })
+      anchorReplica.applyRemovalPolicy(RemovalPolicy.RETAIN)
+      new CfnOutput(this, 'AnchorKeyReplicaArn', { value: anchorReplica.attrArn })
     }
 
     const retention = Duration.days(props.auditRetentionDays ?? 365)

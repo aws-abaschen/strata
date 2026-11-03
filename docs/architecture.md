@@ -174,7 +174,7 @@ every 15 minutes, one run at a time (reserved concurrency 1). Each run does thre
    Merkle tree (RFC 9162 hashing, domain-separated leaves and nodes) over every chain's
    head, `_breakglass` included. It then signs a statement `{v, seq, prev, root, leaves,
    createdAt}`, where `prev` is the previous statement's digest:
-   - the signature is ECDSA P-256 by the KMS key `alias/strata-anchor`; the private key
+   - the signature is ECDSA P-256 by the KMS key `alias/strata-anchor-mr`; the private key
      never leaves KMS;
    - the run asks an RFC 3161 timestamp authority (`TSA_URL`) for a token over the same
      digest;
@@ -370,7 +370,7 @@ can be restored somewhere else. Strata keeps a warm standby in `eu-central-1`.
 | Index table | DynamoDB global table, asynchronous, item by item, last writer wins | its replica, with its own stream |
 | Data objects and sealed changes | S3 replication to the standby | S3 replication back to the primary |
 | Audit archive (Object Lock) | built by this region's ledger from its stream | built by the standby's ledger from its own stream |
-| Anchors | signed by the writer region | signed by the writer region, with the primary's KMS key |
+| Anchors | signed by the writer region | signed by the writer region, with its replica of the multi-Region key |
 | Sign-in (Cognito) | primary user pool, multi-Region KMS key | replica of the same pool (same ID and issuer), activated, served automatically when the primary fails |
 
 Each region archives every audit record but publishes only the records it
@@ -462,11 +462,12 @@ drilled without losing a region.
   primary. TOTP does not work in the replica, so every user must have a
   passkey and no TOTP (see below). A federated IdP would also need to outlive
   the region.
-- **No anchors while eu-west-1 is down.** The anchor key is single-region (a key
-  cannot be made multi-region after creation), so the standby signs with it
-  cross-region. During an outage `AnchorStalledAlarm` fires and anchoring resumes
-  afterwards. Moving the key to a security account is the time to make it
-  multi-region.
+- **Two anchor keys to pin.** Anchors are signed with a multi-Region key
+  (`alias/strata-anchor-mr`); the standby signs with its replica, in its own
+  Region, under the same public key, so anchoring goes on during an outage.
+  Anchors before 2026-11-03 were signed with the first, single-Region key (a key
+  cannot be made multi-Region after creation), which is retained. Verifiers
+  accept a file of several pinned keys, so auditors pin both.
 - **Split brain is detected, not prevented.** If the old writer is still up,
   unreachable by the operator but reachable by clients, it keeps writing until
   replication brings it the new writer item. Preventing that needs a quorum

@@ -107,3 +107,9 @@ test('the user pool is ready for replication: multi-Region key, passkeys as MFA,
   template.hasResourceProperties('AWS::Cognito::UserPoolClient', { ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_AUTH']) })
   template.hasResourceProperties('AWS::Events::Rule', { EventPattern: Match.objectLike({ source: ['aws.kms'] }) })
 })
+
+test('anchors are signed with a multi-Region key; the first key is kept for old anchors', () => {
+  template.hasResourceProperties('AWS::KMS::Key', { KeySpec: 'ECC_NIST_P256', KeyUsage: 'SIGN_VERIFY', MultiRegion: true })
+  template.resourcePropertiesCountIs('AWS::KMS::Key', { KeySpec: 'ECC_NIST_P256' }, 2)
+  template.hasOutput('PreviousAnchorKeyArn', {})
+})

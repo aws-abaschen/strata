@@ -85,6 +85,8 @@ export interface StandbyStores {
   auditKeyArn: string
   dataBucket: string
   auditBucket: string
+  /** Replica of the multi-Region anchor key (the standby signs with it). */
+  anchorKeyArn?: string
 }
 
 /**
@@ -454,16 +456,26 @@ export class StrataStack extends Stack {
     // anchored heads are unchanged, and reconcile the Object Lock archive
     // against the table. In this single-account prototype the operator can
     // still use the key; production moves it to a separate security account.
-    // The standby signs with the same key, in the primary's region: auditors
-    // pin one key. While that region is down no anchors are written and
-    // AnchorStalledAlarm fires; anchoring resumes when it is back.
-    const anchorKey: kms.IKey = standby
-      ? kms.Key.fromKeyArn(this, 'AnchorKey', standby.primary.anchorKeyArn)
+    // The signing key is multi-Region: the standby signs with its replica,
+    // in its own Region, and the public key is the same, so auditors pin one
+    // key for both. The first, single-Region key (anchors before 2026-11-03)
+    // is retained so those anchors stay verifiable: auditors pin both.
+    const previousAnchorKey = standby
+      ? undefined
       : new kms.Key(this, 'AnchorKey', {
-          alias: 'alias/strata-anchor',
-          description: 'Signs audit ledger anchors (ECDSA P-256)',
+        description: 'Signed audit ledger anchors until 2026-11-03 (ECDSA P-256); keep for verification',
+        keySpec: kms.KeySpec.ECC_NIST_P256,
+        keyUsage: kms.KeyUsage.SIGN_VERIFY,
+        removalPolicy: RemovalPolicy.RETAIN,
+      })
+    const anchorKey: kms.IKey = standby
+      ? kms.Key.fromKeyArn(this, 'AnchorKeyReplica', standby.base.anchorKeyArn ?? standby.primary.anchorKeyArn)
+      : new kms.Key(this, 'AnchorKeyMr', {
+          alias: 'alias/strata-anchor-mr',
+          description: 'Signs audit ledger anchors (ECDSA P-256, multi-Region: the standby signs with its replica)',
           keySpec: kms.KeySpec.ECC_NIST_P256,
           keyUsage: kms.KeyUsage.SIGN_VERIFY,
+          multiRegion: true,
           removalPolicy: RemovalPolicy.RETAIN,
         })
     const anchorFn = goLambda('Anchor', 'anchor', {
@@ -524,6 +536,7 @@ export class StrataStack extends Stack {
       AuditBucket: auditBucket.bucketName,
       AlarmTopic: alarmTopic.topicArn,
       AnchorKeyArn: anchorKey.keyArn,
+      ...(previousAnchorKey ? { PreviousAnchorKeyArn: previousAnchorKey.keyArn } : {}),
       Role: standby ? 'standby' : 'primary',
     }
     if (web) {

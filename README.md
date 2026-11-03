@@ -124,11 +124,14 @@ See [docs/architecture.md](docs/architecture.md#break-glass-time-boxed-and-revie
 ### Anchors
 
 `strata audit --verify` also checks the signed anchors that covered the repository.
-Pin the anchor public key yourself, never from the API:
+Pin the anchor public keys yourself, never from the API. Anchors are signed with the
+multi-Region key `alias/strata-anchor-mr` (`AnchorKeyArn` output); older ones with the first
+key (`PreviousAnchorKeyArn`). Put both in one file:
 
 ```sh
-aws kms get-public-key --key-id alias/strata-anchor --query PublicKey --output text | base64 -d > anchor.der
-openssl pkey -pubin -inform DER -in anchor.der -out anchor.pem
+for k in <AnchorKeyArn> <PreviousAnchorKeyArn>; do
+  aws kms get-public-key --key-id "$k" --query PublicKey --output text | base64 -d | openssl pkey -pubin -inform DER
+done > anchor.pem
 strata audit --verify --anchor-key anchor.pem --tsa-ca tsa-root.pem
 ```
 
