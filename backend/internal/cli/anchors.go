@@ -146,8 +146,16 @@ func printAnchors(out io.Writer, label string, checked []anchor.Checked, ac anch
 	}
 	last := checked[len(checked)-1]
 	fmt.Fprintf(out, "%sanchored %d times, through seq %d (anchor %d)\n", label, len(checked), last.Leaf.Seq, last.Seq)
-	if ac.trust.Key != nil {
-		fmt.Fprintf(out, "  signatures: verified with the pinned anchor key\n")
+	if len(ac.trust.Keys) > 0 {
+		signers := map[string]bool{}
+		for _, ch := range checked {
+			signers[ch.SignedBy] = true
+		}
+		if len(signers) > 1 {
+			fmt.Fprintf(out, "  signatures: verified with the pinned anchor keys (%d keys signed this chain)\n", len(signers))
+		} else {
+			fmt.Fprintf(out, "  signatures: verified with the pinned anchor key\n")
+		}
 	} else {
 		fmt.Fprintf(out, "  signatures: NOT checked, no anchor key pinned (--anchor-key or STRATA_ANCHOR_KEY)\n")
 	}
@@ -177,7 +185,7 @@ func loadTrust(keyFile, caFile string) (anchor.Trust, error) {
 		if err != nil {
 			return t, err
 		}
-		if t.Key, err = anchor.ParsePublicKey(b); err != nil {
+		if t.Keys, err = anchor.ParsePublicKeys(b); err != nil {
 			return t, fmt.Errorf("anchor key %s: %w", keyFile, err)
 		}
 	}

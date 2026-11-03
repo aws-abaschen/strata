@@ -93,7 +93,7 @@ repository's `leaf` `{repo, seq, hash}`, its `index` and the RFC 9162 inclusion
 - `prev` is the digest of the previous anchor's statement, so anchors form a chain.
 - The leaf's `hash` must equal the ledger record at `leaf.seq`.
 
-The anchor key's public half is obtained out of band (a stack output, an email from
+When the signing key changes (a new key, a move to another account), old anchors stay signed with the old key: auditors pin every key the chain was signed with, as several PEM blocks in one file, and a signature must verify under one of them. The anchor key's public half is obtained out of band (a stack output, an email from
 the security team), never from the export.
 
 ## Git mapping

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
@@ -121,7 +122,7 @@ func newFixture(t *testing.T) *fixture {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tsa, roots := newFakeTSA(t)
 	f := &fixture{t: t, ctx: context.Background(), mem: mem, arch: arch, tsa: tsa,
-		trust: Trust{Key: &key.PublicKey, TSARoot: roots}, now: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)}
+		trust: Trust{Keys: []*ecdsa.PublicKey{&key.PublicKey}, TSARoot: roots}, now: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)}
 	f.job = &Job{Meta: mem, Archive: arch, Signer: LocalSigner{Key: key, ID: "test"}, TSA: tsa, Now: func() time.Time { return f.now }}
 	return f
 }
@@ -268,7 +269,7 @@ func TestTrustIsPinnedNotServed(t *testing.T) {
 	f.run()
 
 	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	f.trust.Key = &other.PublicKey
+	f.trust.Keys = []*ecdsa.PublicKey{&other.PublicKey}
 	if _, err := f.verify("payments"); err == nil || !strings.Contains(err.Error(), "pinned key") {
 		t.Fatalf("wrong key: %v", err)
 	}
@@ -327,5 +328,39 @@ func TestDRChainIsAnchored(t *testing.T) {
 	}
 	if err := core.ValidateRepoName(core.DRChain); !errors.Is(err, core.ErrInvalid) {
 		t.Fatalf("a repository may be named %s: %v", core.DRChain, err)
+	}
+}
+
+// When the signing key changes (a new multi-Region key, a move to another
+// account), the chain verifies with every key it was signed with pinned, and
+// not with the new key alone.
+func TestKeyRotation(t *testing.T) {
+	f := newFixture(t)
+	old := f.trust.Keys[0]
+	f.write("payments")
+	f.run()
+	next, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	f.job.Signer = LocalSigner{Key: next, ID: "next"}
+	f.write("payments")
+	if rep := f.run(); rep.Anchored != 2 {
+		t.Fatalf("anchor with the new key: %+v", rep)
+	}
+	f.trust.Keys = []*ecdsa.PublicKey{old, &next.PublicKey}
+	got, err := f.verify("payments")
+	if err != nil || len(got) != 2 || got[0].SignedBy == got[1].SignedBy || got[1].SignedBy != KeyFingerprint(&next.PublicKey) {
+		t.Fatalf("both keys pinned: %+v %v", got, err)
+	}
+	f.trust.Keys = []*ecdsa.PublicKey{&next.PublicKey}
+	if _, err := f.verify("payments"); err == nil {
+		t.Fatal("verified anchor 1 without its key")
+	}
+	// Several keys in one PEM file, as auditors pin them.
+	var pemFile []byte
+	for _, k := range []*ecdsa.PublicKey{old, &next.PublicKey} {
+		der, _ := x509.MarshalPKIXPublicKey(k)
+		pemFile = append(pemFile, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})...)
+	}
+	if keys, err := ParsePublicKeys(pemFile); err != nil || len(keys) != 2 {
+		t.Fatalf("parse two keys: %d %v", len(keys), err)
 	}
 }

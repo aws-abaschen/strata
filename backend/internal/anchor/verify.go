@@ -6,7 +6,9 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -69,11 +71,51 @@ func (t HTTPTSA) Stamp(ctx context.Context, digest []byte) ([]byte, error) {
 // Trust is what a verifier pins out of band. Nil fields are not checked,
 // and the result says so.
 type Trust struct {
-	Key     *ecdsa.PublicKey // the anchor signing key
-	TSARoot *x509.CertPool   // roots of the timestamp authority
+	// Keys are the anchor signing keys: every key the chain was ever signed
+	// with (keys change, for example when the signer moves to a new key or
+	// account). A signature must verify under one of them.
+	Keys    []*ecdsa.PublicKey
+	TSARoot *x509.CertPool // roots of the timestamp authority
 }
 
-// ParsePublicKey reads a PEM or DER SubjectPublicKeyInfo (as KMS GetPublicKey returns).
+// ParsePublicKeys reads every PEM "PUBLIC KEY" block in b, or one DER
+// SubjectPublicKeyInfo (as KMS GetPublicKey returns).
+func ParsePublicKeys(b []byte) ([]*ecdsa.PublicKey, error) {
+	var keys []*ecdsa.PublicKey
+	rest := b
+	for {
+		p, r := pem.Decode(rest)
+		if p == nil {
+			break
+		}
+		rest = r
+		k, err := ParsePublicKey(p.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	if len(keys) > 0 {
+		return keys, nil
+	}
+	k, err := ParsePublicKey(b)
+	if err != nil {
+		return nil, err
+	}
+	return []*ecdsa.PublicKey{k}, nil
+}
+
+// KeyFingerprint is the SHA-256 of a key's DER SubjectPublicKeyInfo, hex.
+func KeyFingerprint(k *ecdsa.PublicKey) string {
+	der, err := x509.MarshalPKIXPublicKey(k)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:])
+}
+
+// ParsePublicKey reads one PEM or DER SubjectPublicKeyInfo.
 func ParsePublicKey(b []byte) (*ecdsa.PublicKey, error) {
 	if p, _ := pem.Decode(b); p != nil {
 		b = p.Bytes
@@ -93,7 +135,8 @@ func ParsePublicKey(b []byte) (*ecdsa.PublicKey, error) {
 type Checked struct {
 	Seq          int64
 	Leaf         core.AnchorLeaf
-	SignatureOK  bool      // signature valid under the pinned key
+	SignatureOK  bool      // signature valid under a pinned key
+	SignedBy     string    // that key's fingerprint (KeyFingerprint)
 	TimestampAt  time.Time // zero if no timestamp
 	TimestampOK  bool      // token valid and over this statement
 	TimestampCA  bool      // TSA certificate chains to a pinned root
@@ -109,11 +152,16 @@ func Verify(p core.AnchorProof, trust Trust) (Checked, error) {
 		return c, err
 	}
 	digest := p.Statement.Digest()
-	if trust.Key != nil {
-		if !ecdsa.VerifyASN1(trust.Key, digest, p.Seal.Signature) {
-			return c, fmt.Errorf("anchor %d: signature does not match the pinned key", p.Statement.Seq)
+	if len(trust.Keys) > 0 {
+		for _, k := range trust.Keys {
+			if ecdsa.VerifyASN1(k, digest, p.Seal.Signature) {
+				c.SignatureOK, c.SignedBy = true, KeyFingerprint(k)
+				break
+			}
 		}
-		c.SignatureOK = true
+		if !c.SignatureOK {
+			return c, fmt.Errorf("anchor %d: signature does not match any pinned key", p.Statement.Seq)
+		}
 	}
 	if len(p.Seal.Timestamp) > 0 {
 		ts, err := timestamp.Parse(p.Seal.Timestamp)

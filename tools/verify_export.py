@@ -148,14 +148,23 @@ def check_signature(key, digest, sig_b64, seq):
     openssl = shutil.which("openssl")
     if not openssl:
         raise Failed("--anchor-key needs openssl on PATH")
+    # The key file may hold several PEM keys: every key the chain was signed
+    # with. The signature must verify under one of them.
+    text = open(key).read()
+    blocks = ["-----BEGIN PUBLIC KEY-----" + b.split("-----END PUBLIC KEY-----")[0] + "-----END PUBLIC KEY-----\n"
+              for b in text.split("-----BEGIN PUBLIC KEY-----")[1:]]
     with tempfile.TemporaryDirectory() as d:
         dg, sg = os.path.join(d, "digest"), os.path.join(d, "sig")
         open(dg, "wb").write(digest)
         open(sg, "wb").write(base64.b64decode(sig_b64))
-        r = subprocess.run([openssl, "pkeyutl", "-verify", "-pubin", "-inkey", key, "-in", dg, "-sigfile", sg],
-                           capture_output=True)
-        if r.returncode != 0:
-            raise Failed("anchor %d: signature does not verify with the pinned key" % seq)
+        for i, block in enumerate(blocks or [text]):
+            kf = os.path.join(d, "key%d.pem" % i)
+            open(kf, "w").write(block)
+            r = subprocess.run([openssl, "pkeyutl", "-verify", "-pubin", "-inkey", kf, "-in", dg, "-sigfile", sg],
+                               capture_output=True)
+            if r.returncode == 0:
+                return
+        raise Failed("anchor %d: signature does not verify with any pinned key" % seq)
 
 
 class Git:

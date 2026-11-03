@@ -280,7 +280,7 @@ func (v *verifier) anchors(name string, recs []core.AuditRecord, trust anchor.Tr
 		return nil, 0, err
 	}
 	if len(ps) == 0 {
-		if trust.Key != nil && len(recs) > 0 {
+		if len(trust.Keys) > 0 && len(recs) > 0 {
 			return nil, 0, fmt.Errorf("%s carries no anchors: nothing ties this ledger to the pinned key", name)
 		}
 		return nil, len(recs), nil
