@@ -350,7 +350,7 @@ func (c *Client) Merge(ctx context.Context, repo string, in MergeRequest) (Merge
 	err := c.do(ctx, http.MethodPost, "/repos/"+esc(repo)+"/merge", in, &out)
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Status == http.StatusConflict && json.Unmarshal(ae.Body, &out) == nil && out.Status == "conflicts" {
-		return out, fmt.Errorf("%d conflicts: nothing was merged", len(out.Conflicts))
+		return out, fmt.Errorf("%s: nothing was merged", plural(len(out.Conflicts), "conflict"))
 	}
 	return out, err
 }
