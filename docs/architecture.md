@@ -127,6 +127,37 @@ edits onto the server:
 For Layer-managed files the merge works on the repo's own contribution, then the
 inherited content is re-applied.
 
+### Branch merges on the server
+
+`POST /repos/{repo}/merge` (`strata merge SOURCE`, or the **Merge** tab in the web
+console) merges one ref into another without a working copy:
+
+1. Find the merge base: walk both histories newest first through every parent,
+   reading at most 200 changes. No common history, more than one merge base
+   (a criss-cross) or a longer walk is refused: merge those on the client.
+2. **Up to date** (the target has the source): nothing to do. **Fast-forward** (the
+   target is behind): the ref moves to the source revision through the same check as
+   a promotion, so approvals on that revision count.
+3. Both moved: the trees are merged three-way, like `strata pull` but with no
+   working copy. The exec bit and the content merge separately; text merges line by
+   line with the same diff3 code. Binary files changed on both sides, delete/change,
+   file/directory and edits to the same or adjacent lines are **conflicts**: nothing
+   is written and the reply lists each path and why (409). Files over 1 MiB, more than
+   200 line-by-line merges or 5,000 directories are also left to the client, so a
+   request stays well inside the Lambda timeout.
+4. A clean merge is a change with parents `[target, source]`, written through the same
+   path as a push (closure check, locked Layer files, policy validation, ref CAS, audit
+   record). The first parent is the target, so `log` and fast-forward checks follow the
+   mainline. It links the work items of the changes it brings in.
+5. A merge change is new, so it has no approvals. With four eyes on `main`, send it to a
+   review ref (`--to review/NAME`, or the checkbox in the console), have someone who
+   wrote none of the branch approve it, then promote it (`strata promote`, or the change
+   page in the console).
+
+`dryRun` reports the outcome and conflicts with read access only; the console shows
+it before the button. Conflicts are not yet recorded in history: resolve them on the
+source branch and merge again.
+
 ## Audit ledger and events
 
 Every write (repo created, settings changed, ref moved, change created, annotation)
@@ -296,8 +327,8 @@ a `forbid` in `strata-policies` guards `main` and, because forbids bind
 | `context.` | Meaning |
 | --- | --- |
 | `ref` | the ref being moved (`""` when the request moves none) |
-| `fastForward` | the new target descends from the current one (first-parent walk, at most 100 changes; deletes and rollbacks are `false`) |
-| `approvals` | distinct approvers of that exact revision who authored **no** change in the range from the current target to the new one |
+| `fastForward` | the new target descends from the current one (walk through every parent, at most 200 changes read; deletes and rollbacks are `false`) |
+| `approvals` | distinct approvers of that exact revision who authored **no** change in the range from the current target to the new one; the range follows every parent, so a merge counts the authors of the branch it brings in. A range too long to read counts none |
 | `hasWorkItem` | the change, with its annotations, links a work item |
 
 - **Approvals** are `POST /repos/{repo}/changes/{rev}/approvals` (Cedar action
@@ -534,9 +565,9 @@ The order and the reasons are in [roadmap.md](roadmap.md).
   never counts as an approver of the agent's change.
 - **Query API**: history, blame, diff and merge-base by API and MCP, so agents and CI
   need no checkout. Comes before virtual checkout.
-- **Merges**: `strata pull` merges on the client; histories stay linear. Next: branches
-  with server-side merge changes (two parents) and conflicts recorded in history, so a
-  reviewer can merge from the web console.
+- **Merges**: clean merges run on the server and from the web console; conflicts are
+  reported, not resolved. Next: `strata pull --from REF` to bring another branch into a
+  working copy and resolve there, and conflicts recorded in history.
 - **Layers**: automatic wave rollouts (today: point canary repos at a `canary` ref, then move `main`), fleet drift view (which Layer revision each repo last pulled), Layer-level deny rules.
   Layers are also a trust boundary: signed bundles verified before load, separate
   classes for text rules, executable hooks and MCP servers, allow-lists that name tools
