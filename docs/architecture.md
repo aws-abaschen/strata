@@ -477,9 +477,13 @@ drilled without losing a region.
 - **Replication starts empty.** Neither a new replica nor a new replication rule
   copies what already exists: `just dr-backfill` copies the objects and the audit
   archive once.
-- **Clients pick a region.** There is no shared API domain. The 421 follow covers
-  writes; reads from the standby can lag by seconds. The web console runs in the
-  primary only.
+- **One API name, a few minutes behind the writer.** `api.strata.baschen.is` has a
+  Route 53 failover record per region. Each record's health check calls that
+  region's `GET /health` (the only route without sign-in), which answers 200
+  only in the writer region, so the name follows the writer. In the drill it
+  followed in 148 s and 286 s (health checks, a 60 s TTL, resolver caches).
+  Until then clients reach the old writer, which answers 421 with the writer's
+  regional URL. The web console's files are served from eu-west-1 only.
 - **The fence needs its region.** Lambdas get `STRATA_REGION`; a store built
   without one (local runs, `TestDeployedStack`) writes unfenced, so run those
   only while eu-west-1 is the writer.
