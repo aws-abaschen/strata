@@ -142,7 +142,10 @@ function Preview({ repo, source, target, result: r }: { repo: string; source: st
               </li>
             ))}
           </ul>
-          <p className="muted">Resolve them on {source} with the CLI (bring in the changes from {target} and push), then merge again.</p>
+          <p className="muted">
+            Edit {source} so it no longer conflicts (for example, make the same change {target} made in those places), push, then merge
+            again.
+          </p>
         </>
       )
   }
