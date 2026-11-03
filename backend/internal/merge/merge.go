@@ -1,4 +1,6 @@
-package cli
+// Package merge merges three versions of a text file line by line (diff3).
+// The CLI uses it for strata pull and the API for server-side merges.
+package merge
 
 import (
 	"bytes"
@@ -15,8 +17,8 @@ const (
 // maxMergeCells caps the line-diff table (lines(base) x lines(side)).
 const maxMergeCells = 4_000_000
 
-// isText reports whether b looks like text we can merge line by line.
-func isText(b []byte) bool { return bytes.IndexByte(b, 0) < 0 }
+// IsText reports whether b looks like text we can merge line by line.
+func IsText(b []byte) bool { return bytes.IndexByte(b, 0) < 0 }
 
 // splitLines splits after each newline, so joining gives the input back.
 func splitLines(b []byte) []string {

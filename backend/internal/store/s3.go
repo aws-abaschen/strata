@@ -104,6 +104,26 @@ func (s *S3) PresignPut(ctx context.Context, repo string, h core.Hash, size int6
 	return Upload{Hash: h, URL: req.URL, Method: req.Method, Headers: headerMap(req.SignedHeader)}, nil
 }
 
+// PutObject implements Objects. S3 checks the SHA-256 checksum, and
+// If-None-Match keeps an existing object untouched (412 = already there,
+// 409 = a concurrent write of the same bytes).
+func (s *S3) PutObject(ctx context.Context, repo string, b []byte) (core.Hash, error) {
+	h := core.HashBytes(b)
+	raw, _ := hex.DecodeString(string(h))
+	_, err := s.Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:         &s.Bucket,
+		Key:            aws.String(objectKey(repo, h)),
+		Body:           bytes.NewReader(b),
+		ContentLength:  aws.Int64(int64(len(b))),
+		ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(raw)),
+		IfNoneMatch:    aws.String("*"),
+	})
+	if st := httpStatus(err); err != nil && st != http.StatusPreconditionFailed && st != http.StatusConflict {
+		return "", err
+	}
+	return h, nil
+}
+
 // PresignGet implements Objects.
 func (s *S3) PresignGet(ctx context.Context, repo string, h core.Hash) (string, error) {
 	req, err := s.Presign.PresignGetObject(ctx, &s3.GetObjectInput{Bucket: &s.Bucket, Key: aws.String(objectKey(repo, h))}, s.ttl)

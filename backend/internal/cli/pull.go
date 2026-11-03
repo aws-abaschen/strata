@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	"github.com/aws-abaschen/strata/backend/internal/core"
+	"github.com/aws-abaschen/strata/backend/internal/merge"
 )
 
 // ConflictState is .strata/conflicts.json: files a pull could not merge.
@@ -45,7 +46,7 @@ func unresolved(root string) ([]string, error) {
 			left = append(left, f)
 			continue
 		}
-		if c, err := os.ReadFile(p); err == nil && HasConflictMarkers(c) {
+		if c, err := os.ReadFile(p); err == nil && merge.HasConflictMarkers(c) {
 			left = append(left, f)
 		}
 	}
@@ -247,8 +248,8 @@ func Pull(ctx context.Context, c *Client, st *State, root string) (PullResult, e
 			if err != nil {
 				return res, err
 			}
-			if isText(mine) && isText(other) && isText(orig) {
-				if merged, n, ok := Merge3(orig, mine, other, label); ok {
+			if merge.IsText(mine) && merge.IsText(other) && merge.IsText(orig) {
+				if merged, n, ok := merge.Merge3(orig, mine, other, label); ok {
 					if err := writeFile(root, p, merged, o.Kind); err != nil {
 						return res, err
 					}
