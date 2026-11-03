@@ -30,6 +30,7 @@ func main() {
 		WebURL:           os.Getenv("WEB_URL"),
 		PolicyRepo:       os.Getenv("POLICY_REPO"),
 		RequireFreshAuth: true,
+		Region:           os.Getenv("STRATA_REGION"),
 		Log:              slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 	}
 	lambda.Start(a.LambdaHandler())

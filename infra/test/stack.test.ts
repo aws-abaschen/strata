@@ -32,10 +32,14 @@ test('index table has PITR and deletion protection', () => {
   })
 })
 
-test('every API route requires a JWT', () => {
+test('every API route requires a JWT, except the writer health check', () => {
   const routes = template.findResources('AWS::ApiGatewayV2::Route')
   for (const [id, r] of Object.entries(routes)) {
-    if ((r as any).Properties.AuthorizationType !== 'JWT') throw new Error(`route ${id} is not JWT-protected`)
+    const p = (r as any).Properties
+    if (p.AuthorizationType === 'JWT') continue
+    // The only exception: DNS health checks cannot sign in.
+    if (p.RouteKey === 'GET /health' && p.AuthorizationType === 'NONE') continue
+    throw new Error(`route ${id} (${p.RouteKey}) is not JWT-protected`)
   }
 })
 

@@ -45,8 +45,11 @@ type API struct {
 	// MFA) in the last 15 minutes. The Lambda turns it on; dev tokens carry
 	// no sign-in time.
 	RequireFreshAuth bool
-	Now              func() time.Time
-	Log              *slog.Logger
+	// Region is reported by GET /health, so callers of the shared API name
+	// can see which region answered.
+	Region string
+	Now    func() time.Time
+	Log    *slog.Logger
 
 	layers *layers.Resolver
 	authz  *authz.Authorizer
@@ -133,6 +136,11 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /break-glass/{id}/end", a.endGrant)
 	mux.HandleFunc("POST /break-glass/{id}/review", a.reviewGrant)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The one unauthenticated route: DNS health checks cannot sign in.
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			a.health(w, r)
+			return
+		}
 		if identity(r) == "" {
 			writeJSON(w, http.StatusUnauthorized, errBody{"unauthenticated"})
 			return
@@ -284,6 +292,24 @@ func (a *API) audit(r *http.Request, action string, detail any) (core.AuditEntry
 		e.BreakGlass = id
 	}
 	return e, nil
+}
+
+// health says whether this region is the writer (GET /health, no sign-in:
+// API Gateway routes it without the authorizer). 200 in the writer region,
+// 503 elsewhere, so Route 53 failover records on the shared API domain
+// follow the writer. It reveals only the writer's region and epoch.
+func (a *API) health(w http.ResponseWriter, r *http.Request) {
+	err := a.Meta.Writable(r.Context())
+	var nw *store.NotWriterError
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]any{"writer": true, "region": a.Region})
+	case errors.As(err, &nw):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"writer": false, "region": a.Region, "writerRegion": nw.Writer.Region, "epoch": nw.Writer.Epoch})
+	default:
+		a.log().ErrorContext(r.Context(), "health", "err", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"writer": false})
+	}
 }
 
 func (a *API) me(w http.ResponseWriter, r *http.Request) {

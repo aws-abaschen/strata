@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -59,5 +60,30 @@ func TestCLIFollowsTheWriter(t *testing.T) {
 	out, code = central.run(dir, ana, "annotate", "--note", "x")
 	if code == 0 || !strings.Contains(out, "eu-central-1 is not the writer region") {
 		t.Fatalf("standby without writer URL (exit %d):\n%s", code, out)
+	}
+}
+
+// GET /health answers without sign-in: 200 in the writer region, 503
+// elsewhere, so DNS failover on the shared API domain follows the writer.
+func TestHealthFollowsTheWriter(t *testing.T) {
+	west, central := newHarness(t), newHarness(t)
+	west.mem.Region, west.mem.Primary = "eu-west-1", "eu-west-1"
+	central.mem.Region, central.mem.Primary = "eu-central-1", "eu-west-1"
+	status := func(h *harness) int {
+		res, err := http.Get(h.srv.URL + "/health")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if status(west) != 200 || status(central) != 503 {
+		t.Fatalf("before any writer item: west %d, central %d", status(west), status(central))
+	}
+	w := store.Writer{Region: "eu-central-1", Epoch: 2}
+	west.mem.SetWriter(context.Background(), w, 0)
+	central.mem.SetWriter(context.Background(), w, 0)
+	if status(west) != 503 || status(central) != 200 {
+		t.Fatalf("after switchover: west %d, central %d", status(west), status(central))
 	}
 }

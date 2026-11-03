@@ -14,6 +14,7 @@ import * as kms from 'aws-cdk-lib/aws-kms'
 import * as targets from 'aws-cdk-lib/aws-events-targets'
 import * as lambda from 'aws-cdk-lib/aws-lambda'
 import * as logs from 'aws-cdk-lib/aws-logs'
+import * as acm from 'aws-cdk-lib/aws-certificatemanager'
 import * as route53 from 'aws-cdk-lib/aws-route53'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment'
@@ -64,6 +65,15 @@ export interface StrataStackProps extends StackProps {
    * (HTTP 421) until strata-dr makes this region the writer.
    */
   standby?: { primary: PrimaryRefs; base: StandbyStores; userPoolReplica?: boolean }
+  /** One API name for both regions, following the writer (Route 53 failover). */
+  apiDomain?: ApiDomain
+}
+
+/** A Route 53 name for the API, in a zone in this account. */
+export interface ApiDomain {
+  name: string
+  hostedZoneId: string
+  zoneName: string
 }
 
 /** The standby's stores as the primary sees them. */
@@ -284,6 +294,10 @@ export class StrataStack extends Stack {
       integration: new HttpLambdaIntegration('Lambda', apiFn),
       authorizer: new HttpJwtAuthorizer('Jwt', authority, { jwtAudience: [clientId] }),
     })
+    // Whether this region is the writer, for DNS health checks: no sign-in.
+    // A more specific route wins over /{proxy+}.
+    api.addRoutes({ path: '/health', methods: [apigw.HttpMethod.GET], integration: new HttpLambdaIntegration('Health', apiFn) })
+    const sharedApi = props.apiDomain ? this.sharedApiDomain(props.apiDomain, api, !!standby) : undefined
 
     // --- Work-tracker sync: links changes to Jira issues. ---
     const jiraSecret = props.jiraSecretArn
@@ -522,10 +536,11 @@ export class StrataStack extends Stack {
       description: 'Ledger anchor configuration changed',
     })
 
-    if (web) this.webFiles(web, api.apiEndpoint)
+    if (web) this.webFiles(web, sharedApi ?? api.apiEndpoint)
 
     const out: Record<string, string> = {
       ApiUrl: api.apiEndpoint,
+      ...(sharedApi ? { SharedApiUrl: sharedApi } : {}),
       WebUrl: webUrl,
       Authority: authority,
       ClientId: clientId,
@@ -544,6 +559,45 @@ export class StrataStack extends Stack {
       out.AuthDomain = web.domain.baseUrl()
     }
     for (const [k, v] of Object.entries(out)) new CfnOutput(this, k, { value: v })
+  }
+
+  /**
+   * The shared API domain: a regional custom domain in each region and a
+   * Route 53 failover record, primary in the primary region. Each record's
+   * health check calls its region's GET /health, which answers 200 only in
+   * the writer region, so the name follows the writer, including after a
+   * strata-dr switchover. (If no region is the writer, while a switchover
+   * drains, Route 53 answers with the primary.)
+   */
+  private sharedApiDomain(d: ApiDomain, api: apigw.HttpApi, secondary: boolean): string {
+    const zone = route53.HostedZone.fromHostedZoneAttributes(this, 'ApiZone', { hostedZoneId: d.hostedZoneId, zoneName: d.zoneName })
+    const certificate = new acm.Certificate(this, 'ApiCert', { domainName: d.name, validation: acm.CertificateValidation.fromDns(zone) })
+    const domain = new apigw.DomainName(this, 'ApiDomain', { domainName: d.name, certificate })
+    new apigw.ApiMapping(this, 'ApiMapping', { api, domainName: domain, stage: api.defaultStage })
+    const health = new route53.CfnHealthCheck(this, 'ApiWriterHealth', {
+      healthCheckConfig: {
+        type: 'HTTPS',
+        fullyQualifiedDomainName: `${api.apiId}.execute-api.${this.region}.amazonaws.com`,
+        resourcePath: '/health',
+        port: 443,
+        enableSni: true,
+        requestInterval: 30,
+        failureThreshold: 2,
+        regions: ['eu-west-1', 'us-east-1', 'ap-southeast-1'],
+      },
+      healthCheckTags: [{ key: 'Name', value: `strata-api-writer-${this.region}` }],
+    })
+    new route53.CfnRecordSet(this, 'ApiRecord', {
+      hostedZoneId: d.hostedZoneId,
+      name: d.name,
+      type: 'A',
+      setIdentifier: `strata-api-${this.region}`,
+      failover: secondary ? 'SECONDARY' : 'PRIMARY',
+      healthCheckId: health.attrHealthCheckId,
+      aliasTarget: { dnsName: domain.regionalDomainName, hostedZoneId: domain.regionalHostedZoneId, evaluateTargetHealth: false },
+    })
+    new CfnOutput(this, 'ApiWriterHealthCheckId', { value: health.attrHealthCheckId })
+    return `https://${d.name}`
   }
 
   private webAndIdentity(props: StrataStackProps, data: s3.Bucket) {

@@ -110,3 +110,16 @@ test('the standby base keeps its own archive and replicates data back', () => {
     }),
   })
 })
+
+test('the shared API name fails over to the writer region', () => {
+  const apiDomain = { name: 'api.example.com', hostedZoneId: 'Z1', zoneName: 'example.com' }
+  const p = Template.fromStack(new StrataStack(new App(), 'P3', { env: env('eu-west-1'), apiDomain }))
+  const s = Template.fromStack(new StrataStack(new App(), 'S3', { env: env('eu-central-1'), apiDomain, standby: { primary, base } }))
+  for (const [t, role] of [[p, 'PRIMARY'], [s, 'SECONDARY']] as const) {
+    t.hasResourceProperties('AWS::Route53::RecordSet', { Name: 'api.example.com', Type: 'A', Failover: role })
+    t.hasResourceProperties('AWS::Route53::HealthCheck', { HealthCheckConfig: Match.objectLike({ ResourcePath: '/health', Type: 'HTTPS' }) })
+    // /health is the only route without the authorizer.
+    t.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'GET /health', AuthorizationType: 'NONE' })
+    t.hasResourceProperties('AWS::ApiGatewayV2::Route', { RouteKey: 'GET /{proxy+}', AuthorizationType: 'JWT' })
+  }
+})

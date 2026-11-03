@@ -1,7 +1,7 @@
 import { App, Tags } from 'aws-cdk-lib'
 import { SiteCertStack, SiteStack } from '../lib/site-stack.js'
 import { type PrimaryRefs, StandbyBaseStack } from '../lib/standby-base-stack.js'
-import { StrataStack, type StandbyStores } from '../lib/strata-stack.js'
+import { type ApiDomain, StrataStack, type StandbyStores } from '../lib/strata-stack.js'
 
 const app = new App()
 const ctx = (k: string) => (app.node.tryGetContext(k) as string | undefined) || undefined
@@ -24,6 +24,7 @@ const account = '067751999967'
 const common = {
   alarmEmail: ctx('alarmEmail'),
   tsaUrl: ctx('tsaUrl'),
+  apiDomain: app.node.tryGetContext('apiDomain') as ApiDomain | undefined,
 }
 
 new StrataStack(app, 'Strata', {
