@@ -39,6 +39,7 @@ backend/   Go: Lambdas (cmd/api, cmd/tracker), CLI (cmd/strata), internal packag
 infra/     AWS CDK (TypeScript): stack "Strata", plus "StrataSiteCert" and "StrataSite" for the public site
 web/       React + Vite + TypeScript web console
 site/      public showcase site (plain HTML/CSS, no build step), https://strata.baschen.is
+tools/figures/  build scripts for the site's interactive figures (`node tools/figures/four-eyes/build.mjs` writes site/figures/)
 scripts/   helper scripts
 ```
 
