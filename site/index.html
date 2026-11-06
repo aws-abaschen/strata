@@ -28,6 +28,7 @@
       <a href="#architecture">Architecture</a>
       <a href="#cost">Pricing</a>
       <a href="#status">Status</a>
+      <a href="https://github.com/aws-abaschen/strata">GitHub</a>
     </nav>
   </div>
 </header>
@@ -165,6 +166,12 @@
         <p>Events are published from the ledger, not alongside it. Jira gets a remote link for each change; your SIEM can subscribe to the same stream.</p>
       </div>
     </div>
+    <figure class="fig">
+      <div class="fig-frame">
+        <iframe src="figures/four-eyes.html" title="Four-eyes on main: an interactive index wheel. The wheel is main; it can only advance when a reviewer's key and a work-item card have lifted both bolts." loading="lazy"></iframe>
+      </div>
+      <figcaption>The wheel is <code>main</code>, and each notch is a revision. Main moves onto the next revision only when both bolts are lifted: a reviewer who wrote none of the changes turns the key (the author's key won't turn), and the change carries a work item. The ratchet turns forward only, so <code>main</code> can't be rolled back or deleted. An approval is bound to one revision, so after every move both bolts drop into the next notch's holes. This follows the example policy <code>four-eyes.cedar</code>. Click the key (or press 1) to approve, the card slot (2) to link a work item, or press A to try the author's key.</figcaption>
+    </figure>
   </div>
 </section>
 
@@ -378,6 +385,7 @@
 <footer>
   <div class="wrap">
     <p>Strata is an independent prototype. It runs on Amazon Web Services but is not affiliated with or endorsed by AWS.</p>
+    <p>Source on <a href="https://github.com/aws-abaschen/strata">GitHub</a>, free for personal, research and noncommercial use under the <a href="https://github.com/aws-abaschen/strata/blob/main/LICENSE.md">PolyForm Noncommercial license</a>. Reselling, SaaS hosting or other commercial use needs a commercial license: <a href="mailto:anthony@baschen.is">anthony@baschen.is</a>.</p>
     <p><a href="https://baschen.is">baschen.is</a> · <a href="https://baschen.is/privacy/">Privacy</a></p>
   </div>
 </footer>
