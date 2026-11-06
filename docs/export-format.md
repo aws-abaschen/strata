@@ -82,7 +82,8 @@ directly, because the ledger lives in a database, not as files.
 `statement` `{v, seq, prev, root, leaves, createdAt}`, its `seal` (`signature`:
 base64 ASN.1 DER ECDSA P-256; `timestamp`: base64 RFC 3161 token, optional), this
 repository's `leaf` `{repo, seq, hash}`, its `index` and the RFC 9162 inclusion
-`proof` (sibling hashes, leaf to root).
+`proof` (sibling hashes, leaf to root; `null` when the anchor covers a single
+chain, so the tree has one leaf and the root is the leaf hash).
 
 - The statement's bytes are its compact JSON in that key order. Its digest is
   SHA-256 of those bytes. The signature is over the digest (sign-digest, not

@@ -44,7 +44,19 @@ export function ChangePage() {
             {c.author} · {new Date(c.createdAt).toLocaleString()}
           </dd>
           <dt>Parents</dt>
-          <dd>{c.parents.length ? c.parents.map((p) => <Rev key={p} repo={repo} rev={p} />) : <span className="muted">none (root)</span>}</dd>
+          <dd>
+            {c.parents.length ? (
+              c.parents.map((p, i) => (
+                <span key={p}>
+                  {i > 0 && ', '}
+                  <Rev repo={repo} rev={p} />
+                </span>
+              ))
+            ) : (
+              <span className="muted">none (root)</span>
+            )}
+            {c.parents.length > 1 && <span className="muted"> (a merge: first parent is the branch merged into)</span>}
+          </dd>
           {c.predecessor && (
             <>
               <dt>Amends</dt>
@@ -75,6 +87,7 @@ export function ChangePage() {
         ))}
       </ul>
       <ApproveButton repo={repo} rev={rev} />
+      <PromoteForm repo={repo} rev={rev} />
 
       <h2>Annotations</h2>
       <p className="muted">Add tickets, labels or notes after the fact. The revision itself never changes.</p>
@@ -114,6 +127,49 @@ function ApproveButton({ repo, rev }: { repo: string; rev: string }) {
           Approve this revision
         </button>
       </div>
+      {m.error && <ErrorBox error={m.error} />}
+    </div>
+  )
+}
+
+/** Moves a ref to this revision, if the policies allow (for example after approvals). */
+function PromoteForm({ repo, rev }: { repo: string; rev: string }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const refs = useQuery({ queryKey: ['refs', repo], queryFn: () => api.refs(repo) })
+  const [name, setName] = useState('main')
+  const current = refs.data?.find((r) => r.name === name)
+  const m = useMutation({
+    mutationFn: () => api.moveRef(repo, name, rev, current?.target ?? ''),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['refs', repo] })
+      qc.invalidateQueries({ queryKey: ['log', repo] })
+    },
+  })
+  return (
+    <div className="card stack">
+      <div className="form-row">
+        <label className="field">
+          Promote to
+          <select value={name} onChange={(e) => (setName(e.target.value), m.reset())}>
+            {!refs.data?.some((r) => r.name === 'main') && <option>main</option>}
+            {refs.data?.map((r) => (
+              <option key={r.name}>{r.name}</option>
+            ))}
+          </select>
+        </label>
+        <span className="field muted">{current?.target === rev ? 'already here' : current ? 'moves it from its current revision' : 'creates it'}</span>
+      </div>
+      <div>
+        <button className="btn" disabled={m.isPending || current?.target === rev} onClick={() => m.mutate()}>
+          Promote this revision
+        </button>
+      </div>
+      {m.data && (
+        <p className="notice">
+          {m.data.name} is now at this revision.
+        </p>
+      )}
       {m.error && <ErrorBox error={m.error} />}
     </div>
   )

@@ -37,6 +37,9 @@ type Objects interface {
 	// reject bytes that do not hash to h.
 	PresignPut(ctx context.Context, repo string, h core.Hash, size int64) (Upload, error)
 	PresignGet(ctx context.Context, repo string, h core.Hash) (string, error)
+	// PutObject stores bytes the server produced itself (a merged file or
+	// tree) under their hash, once. An existing object is not an error.
+	PutObject(ctx context.Context, repo string, b []byte) (core.Hash, error)
 	// PutChange writes a sealed change document, once.
 	PutChangeDoc(ctx context.Context, c core.Change, doc []byte) error
 }

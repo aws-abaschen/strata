@@ -117,6 +117,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /repos/{repo}/tree/{rev}", a.tree)
 	mux.HandleFunc("GET /repos/{repo}/log", a.history)
 	mux.HandleFunc("POST /repos/{repo}/changes", a.createChange)
+	mux.HandleFunc("POST /repos/{repo}/merge", a.mergeRefs)
 	mux.HandleFunc("GET /repos/{repo}/changes/{rev}", a.getChange)
 	mux.HandleFunc("POST /repos/{repo}/changes/{rev}/annotations", a.annotate)
 	mux.HandleFunc("POST /repos/{repo}/changes/{rev}/approvals", a.approve)
@@ -424,11 +425,6 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	name := r.PathValue("ref")
-	if err := core.ValidateRefName(name); err != nil {
-		a.fail(w, r, err)
-		return
-	}
 	var in struct {
 		Target   core.Hash `json:"target"`
 		Expected core.Hash `json:"expected"`
@@ -437,42 +433,50 @@ func (a *API) updateRef(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	if in.Target == "" && a.authz.IsPolicyRepo(rp.Name) && name == "main" {
-		// Without main the deployment would fall back to bootstrap.
-		a.fail(w, r, fmt.Errorf("%w: main of the policy repository cannot be deleted", core.ErrPolicy))
-		return
-	}
-	var head core.Change
-	if in.Target != "" {
-		c, err := a.Meta.GetChange(r.Context(), rp.Name, in.Target)
-		if err != nil {
-			a.fail(w, r, fmt.Errorf("target revision: %w", err))
-			return
-		}
-		head = c
-		if a.authz.IsPolicyRepo(rp.Name) && name == "main" {
-			if err := a.authz.Validate(r.Context(), c.Tree); err != nil {
-				a.fail(w, r, fmt.Errorf("policies: %w", err))
-				return
-			}
-		}
-	}
-	mv, err := a.authorizeRefMove(r.Context(), principal(r), rp, name, head, in.Expected)
+	ref, err := a.moveRef(r, rp, r.PathValue("ref"), in.Target, in.Expected)
 	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	ref := core.Ref{Name: name, Target: in.Target, UpdatedBy: identity(r), UpdatedAt: a.now().UTC()}
-	entry, err := a.audit(r, "RefUpdated", map[string]any{"repo": rp.Name, "ref": ref, "previous": in.Expected, "approvers": mv.Approvers})
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	if err := a.Meta.UpdateRef(r.Context(), rp.Name, ref, in.Expected, entry); err != nil {
 		a.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ref)
+}
+
+// moveRef moves ref name from expected to target ("" target = delete) after
+// asking the policies. Promotions and fast-forward merges go through here.
+func (a *API) moveRef(r *http.Request, rp core.Repo, name string, target, expected core.Hash) (core.Ref, error) {
+	if err := core.ValidateRefName(name); err != nil {
+		return core.Ref{}, err
+	}
+	if target == "" && a.authz.IsPolicyRepo(rp.Name) && name == "main" {
+		// Without main the deployment would fall back to bootstrap.
+		return core.Ref{}, fmt.Errorf("%w: main of the policy repository cannot be deleted", core.ErrPolicy)
+	}
+	var head core.Change
+	if target != "" {
+		c, err := a.Meta.GetChange(r.Context(), rp.Name, target)
+		if err != nil {
+			return core.Ref{}, fmt.Errorf("target revision: %w", err)
+		}
+		head = c
+		if a.authz.IsPolicyRepo(rp.Name) && name == "main" {
+			if err := a.authz.Validate(r.Context(), c.Tree); err != nil {
+				return core.Ref{}, fmt.Errorf("policies: %w", err)
+			}
+		}
+	}
+	mv, err := a.authorizeRefMove(r.Context(), principal(r), rp, name, head, expected)
+	if err != nil {
+		return core.Ref{}, err
+	}
+	ref := core.Ref{Name: name, Target: target, UpdatedBy: identity(r), UpdatedAt: a.now().UTC()}
+	entry, err := a.audit(r, "RefUpdated", map[string]any{"repo": rp.Name, "ref": ref, "previous": expected, "approvers": mv.Approvers})
+	if err != nil {
+		return core.Ref{}, err
+	}
+	if err := a.Meta.UpdateRef(r.Context(), rp.Name, ref, expected, entry); err != nil {
+		return core.Ref{}, err
+	}
+	return ref, nil
 }
 
 // negotiate takes the objects a client wants to push and returns upload URLs
@@ -719,7 +723,6 @@ type createChangeInput struct {
 }
 
 func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	rp, err := a.repoFor(r, authz.Write)
 	if err != nil {
 		a.fail(w, r, err)
@@ -730,38 +733,44 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	if !in.Tree.Valid() {
-		a.fail(w, r, badRequest("tree hash"))
+	c, err := a.writeChange(r, rp, in)
+	if err != nil {
+		a.fail(w, r, err)
 		return
 	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+// writeChange checks, seals and records a change, and moves in.Ref. Every
+// write of a change goes through here (pushes and server-side merges), so
+// none skips a check.
+func (a *API) writeChange(r *http.Request, rp core.Repo, in createChangeInput) (core.Change, error) {
+	ctx := r.Context()
+	if !in.Tree.Valid() {
+		return core.Change{}, badRequest("tree hash")
+	}
 	if len(in.Parents) > 8 {
-		a.fail(w, r, badRequest("at most 8 parents"))
-		return
+		return core.Change{}, badRequest("at most 8 parents")
 	}
 	for _, p := range in.Parents {
 		if !p.Valid() {
-			a.fail(w, r, badRequest("parent hash %q", p))
-			return
+			return core.Change{}, badRequest("parent hash %q", p)
 		}
 		if _, err := a.Meta.GetChange(ctx, rp.Name, p); err != nil {
-			a.fail(w, r, fmt.Errorf("parent %s: %w", p.Short(), err))
-			return
+			return core.Change{}, fmt.Errorf("parent %s: %w", p.Short(), err)
 		}
 	}
 	if err := a.checkClosure(ctx, rp.Name, in.Tree); err != nil {
-		a.fail(w, r, err)
-		return
+		return core.Change{}, err
 	}
 	if err := a.checkLocked(ctx, rp, in.Tree); err != nil {
-		a.fail(w, r, err)
-		return
+		return core.Change{}, err
 	}
 	if a.authz.IsPolicyRepo(rp.Name) && in.Ref == "main" {
 		// The policies this push would install must parse: a broken policy
 		// file must not lock everyone out.
 		if err := a.authz.Validate(ctx, in.Tree); err != nil {
-			a.fail(w, r, fmt.Errorf("policies: %w", err))
-			return
+			return core.Change{}, fmt.Errorf("policies: %w", err)
 		}
 	}
 
@@ -775,27 +784,23 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 		c.ChangeID = core.NewChangeID()
 	} else {
 		if !core.ValidChangeID(c.ChangeID) {
-			a.fail(w, r, badRequest("change id %q", c.ChangeID))
-			return
+			return core.Change{}, badRequest("change id %q", c.ChangeID)
 		}
 		pred, err := a.Meta.LatestRevision(ctx, rp.Name, c.ChangeID)
 		if err != nil {
-			a.fail(w, r, fmt.Errorf("change %s: %w", c.ChangeID, err))
-			return
+			return core.Change{}, fmt.Errorf("change %s: %w", c.ChangeID, err)
 		}
 		c.Predecessor = pred
 	}
 	doc, err := c.Seal()
 	if err != nil {
-		a.fail(w, r, err)
-		return
+		return core.Change{}, err
 	}
 
 	var ref *store.RefUpdate
 	if in.Ref != "" {
 		if err := core.ValidateRefName(in.Ref); err != nil {
-			a.fail(w, r, err)
-			return
+			return core.Change{}, err
 		}
 		ref = &store.RefUpdate{Name: in.Ref}
 		switch {
@@ -810,16 +815,14 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 		// A new change has no approvals yet, so a policy that demands them
 		// sends the push through a review ref, then a promotion (updateRef).
 		if _, err = a.authorizeRefMove(ctx, principal(r), rp, ref.Name, c, ref.Expected); err != nil {
-			a.fail(w, r, err)
-			return
+			return core.Change{}, err
 		}
 	}
 
 	// S3 first: the sealed document is the record of truth; the index entry
 	// only becomes visible once it is safely stored.
 	if err := a.Objects.PutChangeDoc(ctx, c, doc); err != nil && !errors.Is(err, store.ErrExists) {
-		a.fail(w, r, err)
-		return
+		return core.Change{}, err
 	}
 	ev := ChangeEvent{ChangeSummary: c.Summary(), Metadata: c.Metadata, URL: a.changeURL(c.Repo, c.Revision)}
 	if ref != nil {
@@ -827,17 +830,15 @@ func (a *API) createChange(w http.ResponseWriter, r *http.Request) {
 	}
 	entry, err := a.audit(r, "ChangeCreated", ev)
 	if err != nil {
-		a.fail(w, r, err)
-		return
+		return core.Change{}, err
 	}
 	if err := a.Meta.PutChange(ctx, c, ref, entry); err != nil {
 		if errors.Is(err, store.ErrConflict) && ref != nil {
 			err = fmt.Errorf("%w: ref %q or change %s moved since you read it; pull and retry", store.ErrConflict, ref.Name, c.ChangeID)
 		}
-		a.fail(w, r, err)
-		return
+		return core.Change{}, err
 	}
-	writeJSON(w, http.StatusCreated, c)
+	return c, nil
 }
 
 func (a *API) getChange(w http.ResponseWriter, r *http.Request) {

@@ -5,8 +5,9 @@ import { Chips, CopyButton, Empty, ErrorBox, Loading, Rev } from '../components'
 import { subject, when } from '../format'
 import { AuditPanel } from './Audit'
 import { FleetPanel, LayersPanel } from './Layers'
+import { MergePanel } from './Merge'
 
-type Tab = 'history' | 'layers' | 'fleet' | 'audit'
+type Tab = 'history' | 'merge' | 'layers' | 'fleet' | 'audit'
 
 export function RepoPage() {
   const { repo = '' } = useParams()
@@ -19,6 +20,7 @@ export function RepoPage() {
   const tab = (params.get('tab') as Tab | null) ?? 'history'
   const tabs: [Tab, string][] = [
     ['history', 'History'],
+    ['merge', 'Merge'],
     ['layers', 'Layers'],
     ...(isLayer ? ([['fleet', 'Fleet']] as [Tab, string][]) : []),
     ['audit', 'Audit'],
@@ -62,6 +64,7 @@ export function RepoPage() {
       </nav>
 
       {tab === 'history' && <History repo={repo} ref_={ref} refsReady={refs.isSuccess} hasRefs={!!refs.data?.length} />}
+      {tab === 'merge' && <MergePanel repo={repo} target={ref} />}
       {tab === 'layers' && info.data && <LayersPanel repo={info.data} ref={ref} />}
       {tab === 'fleet' && isLayer && <FleetPanel layer={repo} />}
       {tab === 'audit' && <AuditPanel repo={repo} />}
