@@ -198,3 +198,10 @@ echo '{"apiUrl":"http://localhost:8788","authority":"","clientId":"","authDomain
 just dev       # web console on http://localhost:5173
 STRATA_API=http://localhost:8788 STRATA_TOKEN=you@example.com strata repo list
 ```
+
+## License
+
+Strata is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+Personal, hobby, research and noncommercial use is free. Selling or reselling it, hosting
+it as a service (SaaS), or any other commercial use needs a commercial license: contact
+anthony@baschen.is. Plain-language summary in [NOTICE.md](NOTICE.md).
