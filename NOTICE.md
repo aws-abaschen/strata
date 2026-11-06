@@ -16,6 +16,10 @@ Strata is source-available under the [PolyForm Noncommercial License 1.0.0](LICE
 - Sell, resell or bundle Strata, or any work based on it.
 - Host Strata, or any work based on it, as a service for others (SaaS, managed service).
 
+## Third-party code
+
+- `tools/figures/kit/`, and the generated `site/figures/*.js` that inlines it, is the Anatomy iso kit: MIT License, Copyright (c) 2026 Ryan. See [tools/figures/kit/LICENSE](tools/figures/kit/LICENSE).
+
 ## Commercial use
 
 For commercial licensing, contact anthony@baschen.is.

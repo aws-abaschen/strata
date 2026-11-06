@@ -52,40 +52,62 @@ export class SiteStack extends Stack {
       autoDeleteObjects: true,
     })
 
-    // No scripts, no third-party origins.
+    // No scripts, no third-party origins. Pages may frame the interactive
+    // figures under /figures/, which come from this origin only.
     const csp = [
       "default-src 'none'",
       "style-src 'self'",
       "img-src 'self' data:",
+      "frame-src 'self'",
       "frame-ancestors 'none'",
       "base-uri 'none'",
       "form-action 'none'",
     ].join('; ')
 
+    // /figures/*: same-origin script files (nothing inline, no eval), and only
+    // this site may frame them.
+    const figuresCsp = [
+      "default-src 'none'",
+      "script-src 'self'",
+      "style-src 'self'",
+      "img-src 'self' data:",
+      "frame-ancestors 'self'",
+      "base-uri 'none'",
+      "form-action 'none'",
+    ].join('; ')
+
+    const security = (policy: string, frameOption: cloudfront.HeadersFrameOption) => ({
+      contentSecurityPolicy: { contentSecurityPolicy: policy, override: true },
+      strictTransportSecurity: { accessControlMaxAge: Duration.days(365), includeSubdomains: true, override: true },
+      contentTypeOptions: { override: true },
+      frameOptions: { frameOption, override: true },
+      referrerPolicy: { referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN, override: true },
+    })
+
     const headers = new cloudfront.ResponseHeadersPolicy(this, 'Headers', {
-      securityHeadersBehavior: {
-        contentSecurityPolicy: { contentSecurityPolicy: csp, override: true },
-        strictTransportSecurity: { accessControlMaxAge: Duration.days(365), includeSubdomains: true, override: true },
-        contentTypeOptions: { override: true },
-        frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
-        referrerPolicy: { referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN, override: true },
-      },
+      securityHeadersBehavior: security(csp, cloudfront.HeadersFrameOption.DENY),
+    })
+    const figureHeaders = new cloudfront.ResponseHeadersPolicy(this, 'FigureHeaders', {
+      securityHeadersBehavior: security(figuresCsp, cloudfront.HeadersFrameOption.SAMEORIGIN),
     })
 
     const domainNames = props.zone && props.certificate ? [props.zone.domainName] : undefined
+    const origin = origins.S3BucketOrigin.withOriginAccessControl(bucket)
+    const behavior = (responseHeadersPolicy: cloudfront.IResponseHeadersPolicy): cloudfront.BehaviorOptions => ({
+      origin,
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+      responseHeadersPolicy,
+      compress: true,
+    })
     const distribution = new cloudfront.Distribution(this, 'Cdn', {
       defaultRootObject: 'index.html',
       domainNames,
       certificate: props.certificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
-      defaultBehavior: {
-        origin: origins.S3BucketOrigin.withOriginAccessControl(bucket),
-        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-        responseHeadersPolicy: headers,
-        compress: true,
-      },
+      defaultBehavior: behavior(headers),
+      additionalBehaviors: { '/figures/*': behavior(figureHeaders) },
       // Without ListBucket, S3 answers 403 for a missing key.
       errorResponses: [403, 404].map((httpStatus) => ({
         httpStatus,

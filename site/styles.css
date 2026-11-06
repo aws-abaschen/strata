@@ -277,3 +277,11 @@ footer a { color: var(--ink-2); }
   .term { font-size: 12.5px; }
   .tbl th, .tbl td { padding: 10px; }
 }
+
+/* Interactive figures (site/figures/, built by tools/figures/). The frame keeps
+   the figure's aspect: height = 0.6 x width + the card's fixed chrome. */
+.fig { margin: 48px auto 0; max-width: 760px; }
+.fig-frame { position: relative; width: 100%; }
+.fig-frame::before { content: ""; display: block; padding-top: calc(60% + 140px); }
+.fig-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.fig figcaption { margin-top: 12px; color: var(--ink-3); font-size: 15px; line-height: 1.6; }
