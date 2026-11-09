@@ -131,7 +131,12 @@ func writeFile(root, rel string, b []byte, kind core.EntryKind) error {
 		mode = 0o755
 	}
 	os.Chmod(p, 0o644) // may be a read-only locked Layer file
-	return os.WriteFile(p, b, mode)
+	if err := os.WriteFile(p, b, mode); err != nil {
+		return err
+	}
+	// WriteFile sets the mode only when it creates the file: set it on an
+	// existing one too, so a pull keeps or picks up the executable bit.
+	return os.Chmod(p, mode)
 }
 
 // PullResult summarizes a pull.
