@@ -51,7 +51,7 @@ and three gaps:
 
 | # | Item | Design change | Biggest design risk |
 | --- | --- | --- | --- |
-| C1 | Server-side merge and batched landing | Conflicts recorded in history. Changes land on protected refs in batches; each keeps its own approval binding. | A failed batch must not void unrelated approvals. |
+| C1 | Server-side merge and batched landing | Clean server-side merges are done (two-parent merge changes, four eyes on the merged branch). Next: conflicts recorded in history. Changes land on protected refs in batches; each keeps its own approval binding. | A failed batch must not void unrelated approvals. |
 | C2 | Path-level permissions | Cedar on path prefixes inside a repository. | Evaluation cost on large trees. |
 | C3 | Evidence attachments | Agent session logs, plans and test runs stored as annotations and carried in the export sidecar. | Size and retention of logs. |
 | C4 | Formal and differential verification | A written model of ref compare-and-swap, ledger chaining and fenced failover. The Git test suite against the bridge. Start the model during wave A. | The model drifting from the build. |

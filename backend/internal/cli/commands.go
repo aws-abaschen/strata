@@ -30,6 +30,8 @@ Usage:
   strata push --review NAME -m MESSAGE          push to review/NAME, for approval
   strata approve [REV] [--note TEXT]            sign off on a colleague's change
   strata promote [REV] [--ref main]             move a ref to an approved revision
+  strata merge SOURCE [--into REF] [--to REF] [-m MESSAGE] [--dry-run] [metadata]
+                                                merge a branch on the server
   strata find --work-item KEY | --label LABEL   search every repository
   strata audit [-n 20] [--verify]               the ledger, hash chain verified here
 
@@ -309,6 +311,39 @@ func run(ctx context.Context, args []string, env Env) error {
 		}
 		fmt.Fprintf(env.Out, "%s now at %s\n", name, rev.Short())
 		return nil
+	case "merge":
+		into := fs.String("into", "", "ref to merge into (default: the working copy's ref)")
+		to := fs.String("to", "", "where the result goes (default: --into), e.g. review/NAME")
+		msg := fs.String("m", "", "message of the merge change")
+		dry := fs.Bool("dry-run", false, "only report what would happen")
+		var mf metaFlags
+		mf.register(fs)
+		if err := fs.Parse(reorder(args)); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 {
+			return errors.New("usage: strata merge SOURCE [--into REF] [--to REF]")
+		}
+		md, err := mf.metadata()
+		if err != nil {
+			return err
+		}
+		target := *into
+		if target == "" {
+			target = st.Ref
+		}
+		res, err := c.Merge(ctx, st.Repo, MergeRequest{Source: fs.Arg(0), Target: target, Into: *to, Message: *msg, Metadata: md, DryRun: *dry})
+		for _, cf := range res.Conflicts {
+			kind := "CONFLICT"
+			if cf.Limit {
+				kind = "LIMIT"
+			}
+			fmt.Fprintf(env.Out, "  %s %s: %s\n", kind, cf.Path, cf.Reason)
+		}
+		if err != nil {
+			return err
+		}
+		return printMerge(env.Out, res, fs.Arg(0), target, *dry)
 	case "log":
 		n := fs.Int("n", 20, "number of changes")
 		if err := fs.Parse(args); err != nil {
@@ -699,4 +734,38 @@ func layersCmd(ctx context.Context, c *Client, st State, root string, args []str
 		return nil
 	}
 	return fmt.Errorf("unknown layers command %q", args[0])
+}
+
+func printMerge(out io.Writer, res MergeResult, source, target string, dry bool) error {
+	would := ""
+	if dry {
+		would = "would be "
+	}
+	switch res.Status {
+	case "up-to-date":
+		fmt.Fprintf(out, "%s already contains %s\n", target, source)
+	case "fast-forward":
+		fmt.Fprintf(out, "%s %sfast-forwarded to %s (%s)\n", res.Into, would, res.Source.Short(), source)
+	case "merged":
+		if res.Change == nil {
+			fmt.Fprintf(out, "%s merges cleanly into %s (base %s)\n", source, target, res.Base.Short())
+			return nil
+		}
+		fmt.Fprintf(out, "merged %s into %s: %s on %s\n", source, target, res.Change.Revision.Short(), res.Into)
+		if res.Into != target {
+			fmt.Fprintf(out, "ask a colleague: strata approve %s\nthen: strata promote %s --ref %s\n", res.Change.Revision, res.Change.Revision.Short(), target)
+		}
+	case "conflicts":
+		fmt.Fprintf(out, "%s: %s does not merge cleanly into %s\n", plural(len(res.Conflicts), "conflict"), source, target)
+	default:
+		fmt.Fprintf(out, "merge: %s\n", res.Status)
+	}
+	return nil
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }

@@ -31,8 +31,10 @@ Roadmap: [docs/roadmap.md](docs/roadmap.md).
 | `strata pull`: three-way merge of your edits with the server's latest (line-level for text, conflict markers, push blocked until resolved) | done |
 | Exit: `strata export` writes a repository as plain Git plus an evidence sidecar (sealed changes, trees, ledger, anchors, annotations, approvals); `strata export verify` and an independent Python verifier prove it complete and unaltered, offline ([format](docs/export-format.md)) | done |
 | Disaster recovery: warm standby in eu-central-1 (global table, two-way object replication, its own audit archive), one writer fenced in every write transaction, `strata-dr switchover` drilled live (about 20 s of no writes, no data loss) and `promote --force` with chain repair; Cognito user pool replicated with automatic sign-in failover (passkeys as MFA), drilled | done |
-| Branch merges in the web console, wave rollouts, Git bridge | next |
+| Branch merges on the server: fast-forward or a two-parent merge change, three-way tree merge (text line by line), conflicts reported by path, dry-run preview; from the web console (Merge tab, promote) and `strata merge`; four-eyes counts the authors of the merged branch | done |
+| Conflicts resolved on the client for branch merges (`strata pull --from`), wave rollouts, Git bridge | next |
 | Agent scale: signed provenance per change, agent classes with a sponsor and kill switch, Layers as signed capability grants, segment storage, query API, mirror mode | planned, see [docs/roadmap.md](docs/roadmap.md) |
+| Centralized pipeline configuration (defined once, inherited through Layers) with AWS Lambda micro VMs as runners | roadmap |
 
 ## Layout
 
@@ -87,6 +89,8 @@ strata push -m "PAY-42 round half-even" --label risk:low --attr approver=ana
 strata annotate --work-item SEC-9 --note "covered by SEC-9 review"
 strata pull                                       # someone pushed first? merge their work into yours
 strata find --work-item PAY-42
+strata merge feature --dry-run                    # would feature merge into main cleanly?
+strata merge feature --to review/merge-feature    # merge for approval, then promote
 ```
 
 ### Layers

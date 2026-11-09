@@ -37,6 +37,8 @@ type APIError struct {
 	Message string
 	// WriterAPI is set on 421: this region only reads; writes go there.
 	WriterAPI string
+	// Body is the raw reply, for errors that carry details (merge conflicts).
+	Body []byte
 }
 
 func (e *APIError) Error() string { return fmt.Sprintf("%d: %s", e.Status, e.Message) }
@@ -99,7 +101,7 @@ func (c *Client) do1(ctx context.Context, method, path string, in, out any) erro
 		if msg == "" {
 			msg = strings.TrimSpace(string(b))
 		}
-		return &APIError{Status: res.StatusCode, Message: msg, WriterAPI: e.WriterAPI}
+		return &APIError{Status: res.StatusCode, Message: msg, WriterAPI: e.WriterAPI, Body: b}
 	}
 	if out == nil {
 		return nil
@@ -317,6 +319,52 @@ func (c *Client) Approvals(ctx context.Context, repo string, rev core.Hash) ([]c
 func (c *Client) MoveRef(ctx context.Context, repo, name string, rev, expected core.Hash) (core.Ref, error) {
 	var out core.Ref
 	err := c.do(ctx, http.MethodPut, "/repos/"+esc(repo)+"/refs/"+name, map[string]any{"target": rev, "expected": expected}, &out)
+	return out, err
+}
+
+// MergeRequest asks the server to merge one ref into another.
+type MergeRequest struct {
+	Source   string        `json:"source"`
+	Target   string        `json:"target"`
+	Into     string        `json:"into,omitempty"`
+	Message  string        `json:"message,omitempty"`
+	Metadata core.Metadata `json:"metadata"`
+	DryRun   bool          `json:"dryRun,omitempty"`
+}
+
+// MergeResult is the server's answer. Conflicts come back with an error.
+type MergeResult struct {
+	Status    string
+	Source    core.Hash
+	Target    core.Hash
+	Base      core.Hash
+	Into      string
+	Conflicts []struct {
+		Path, Reason string
+		// Limit: past what the server merges, not a clash between the sides.
+		Limit bool
+	}
+	Ref    *core.Ref
+	Change *core.Change
+}
+
+// Merge merges in.Source into in.Target on the server.
+func (c *Client) Merge(ctx context.Context, repo string, in MergeRequest) (MergeResult, error) {
+	var out MergeResult
+	err := c.do(ctx, http.MethodPost, "/repos/"+esc(repo)+"/merge", in, &out)
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusConflict && json.Unmarshal(ae.Body, &out) == nil && out.Status == "conflicts" {
+		clashes := 0
+		for _, cf := range out.Conflicts {
+			if !cf.Limit {
+				clashes++
+			}
+		}
+		if clashes == 0 {
+			return out, fmt.Errorf("%s past what the server merges: nothing was merged", plural(len(out.Conflicts), "file"))
+		}
+		return out, fmt.Errorf("%s: nothing was merged", plural(clashes, "conflict"))
+	}
 	return out, err
 }
 

@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	"github.com/aws-abaschen/strata/backend/internal/core"
+	"github.com/aws-abaschen/strata/backend/internal/merge"
 )
 
 // ConflictState is .strata/conflicts.json: files a pull could not merge.
@@ -45,7 +46,7 @@ func unresolved(root string) ([]string, error) {
 			left = append(left, f)
 			continue
 		}
-		if c, err := os.ReadFile(p); err == nil && HasConflictMarkers(c) {
+		if c, err := os.ReadFile(p); err == nil && merge.HasConflictMarkers(c) {
 			left = append(left, f)
 		}
 	}
@@ -130,7 +131,12 @@ func writeFile(root, rel string, b []byte, kind core.EntryKind) error {
 		mode = 0o755
 	}
 	os.Chmod(p, 0o644) // may be a read-only locked Layer file
-	return os.WriteFile(p, b, mode)
+	if err := os.WriteFile(p, b, mode); err != nil {
+		return err
+	}
+	// WriteFile sets the mode only when it creates the file: set it on an
+	// existing one too, so a pull keeps or picks up the executable bit.
+	return os.Chmod(p, mode)
 }
 
 // PullResult summarizes a pull.
@@ -247,8 +253,8 @@ func Pull(ctx context.Context, c *Client, st *State, root string) (PullResult, e
 			if err != nil {
 				return res, err
 			}
-			if isText(mine) && isText(other) && isText(orig) {
-				if merged, n, ok := Merge3(orig, mine, other, label); ok {
+			if merge.IsText(mine) && merge.IsText(other) && merge.IsText(orig) {
+				if merged, n, ok := merge.Merge3(orig, mine, other, label); ok {
 					if err := writeFile(root, p, merged, o.Kind); err != nil {
 						return res, err
 					}

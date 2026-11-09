@@ -13,11 +13,6 @@ import (
 	"github.com/aws-abaschen/strata/backend/internal/store"
 )
 
-// maxRangeWalk caps how far back the first-parent walk goes to decide whether
-// a ref move is a fast-forward and who authored the range. A longer range is
-// treated as not a fast-forward, which fails closed.
-const maxRangeWalk = 100
-
 // approve records the caller's sign-off on one exact revision. The rule that
 // nobody approves their own work is in code, not in policy, so no policy
 // edit (and no admin) can switch it off.
@@ -113,36 +108,34 @@ func (a *API) authorizeRefMove(ctx context.Context, p authz.Principal, rp core.R
 	return mv, a.authz.RequireWith(ctx, p, authz.Write, rp, f)
 }
 
-// refFacts walks first parents from head back to current. If current is
-// reached, the move is a fast-forward and every author on the way is
-// excluded from the approvers that count: A writes c1, B writes c2 on top,
-// then A cannot supply the second pair of eyes for c2.
+// refFacts walks the history from head back to current, through every
+// parent, so a merge counts the authors of the branch it brings in. If
+// current is reached the move is a fast-forward, and every author in the
+// range is excluded from the approvers that count: A writes c1, B writes c2
+// on top, then A cannot supply the second pair of eyes for c2. A range too
+// long to read counts no approvals at all.
 func (a *API) refFacts(ctx context.Context, repo, ref string, head core.Change, current core.Hash) (authz.Facts, []string, error) {
 	f := authz.Facts{Ref: ref}
 	authors := map[string]bool{head.Author: true}
+	truncated := false
 	switch {
 	case current == "":
 		f.FastForward = true
 	case head.Revision == current:
 		f.FastForward = true
 	default:
-		cur := head
-		for i := 0; i < maxRangeWalk && len(cur.Parents) > 0; i++ {
-			next := cur.Parents[0]
-			if next == current {
-				f.FastForward = true
-				break
-			}
-			c, err := a.Meta.GetChange(ctx, repo, next)
-			if err != nil {
-				return f, nil, fmt.Errorf("walking history at %s: %w", next.Short(), err)
-			}
-			authors[c.Author] = true
-			cur = c
+		rw, err := a.walkRange(ctx, repo, head, current, false)
+		if err != nil {
+			return f, nil, err
 		}
+		for _, c := range rw.InRange {
+			authors[c.Author] = true
+		}
+		f.FastForward = rw.BaseInHead && !rw.Truncated
+		truncated = rw.Truncated
 	}
 	var approvers []string
-	if head.Revision != "" {
+	if head.Revision != "" && !truncated {
 		list, err := a.Meta.ListApprovals(ctx, repo, head.Revision)
 		if err != nil {
 			return f, nil, err

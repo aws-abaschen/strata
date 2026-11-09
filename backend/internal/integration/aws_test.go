@@ -161,6 +161,38 @@ func TestDeployedStack(t *testing.T) {
 	}
 	h.ok(a2, ana, "approve", "--note", "integration test")
 
+	// Server-side merge: the API writes the merged file and trees to S3 itself
+	// (PutObject with a SHA-256 checksum and If-None-Match). The second merge
+	// writes the same bytes again, so it also covers "already there" (412).
+	mrg := id + "-merge"
+	m1 := t.TempDir()
+	h.ok(m1, ana, "repo", "create", mrg)
+	h.ok(m1, ana, "init", "--repo", mrg)
+	write(t, m1, map[string]string{"notes.txt": "one\ntwo\nthree\nfour\nfive\n"})
+	h.ok(m1, ana, "push", "-m", ticket+" merge base")
+	mc := &cli.Client{API: srv.URL, Token: ana}
+	mtip, _, err := mc.GetRef(ctx, mrg, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mc.MoveRef(ctx, mrg, "feat", mtip.Target, ""); err != nil {
+		t.Fatal(err)
+	}
+	m2 := filepath.Join(t.TempDir(), "m2")
+	h.ok(t.TempDir(), bo, "clone", mrg, m2, "--ref", "feat")
+	write(t, m1, map[string]string{"notes.txt": "ONE\ntwo\nthree\nfour\nfive\n"})
+	h.ok(m1, ana, "push", "-m", ticket+" main side")
+	write(t, m2, map[string]string{"notes.txt": "one\ntwo\nthree\nfour\nFIVE\n"})
+	h.ok(m2, bo, "push", "-m", ticket+" feat side")
+	h.ok(m1, ana, "merge", "feat", "--to", "review/merge-feat")
+	if out := h.ok(m1, ana, "merge", "feat"); !strings.Contains(out, "merged feat into main") {
+		t.Fatalf("server-side merge:\n%s", out)
+	}
+	h.ok(m1, ana, "pull")
+	if b, _ := os.ReadFile(filepath.Join(m1, "notes.txt")); string(b) != "ONE\ntwo\nthree\nfour\nFIVE\n" {
+		t.Fatalf("merged notes.txt = %q", b)
+	}
+
 	// Work tracking and search.
 	h.ok(a1, bo, "annotate", "--work-item", "SEC-"+ticket[7:], "--note", "reviewed")
 	if !strings.Contains(h.ok(t.TempDir(), bo, "find", "--work-item", ticket), app) {
