@@ -153,6 +153,8 @@ export interface ChangeSummary {
 export interface Conflict {
   path: string
   reason: string
+  /** Past what the server merges (size or count), not a clash between the two sides. */
+  limit?: boolean
 }
 
 /** Reply of POST /repos/{repo}/merge. */

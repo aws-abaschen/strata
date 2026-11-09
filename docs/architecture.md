@@ -134,7 +134,8 @@ console) merges one ref into another without a working copy:
 
 1. Find the merge base: walk both histories newest first through every parent,
    reading at most 200 changes. No common history, more than one merge base
-   (a criss-cross) or a longer walk is refused: merge those on the client.
+   (a criss-cross) or a longer walk is refused with the reason. The server does not
+   merge those yet.
 2. **Up to date** (the target has the source): nothing to do. **Fast-forward** (the
    target is behind): the ref moves to the source revision through the same check as
    a promotion, so approvals on that revision count.
@@ -142,9 +143,12 @@ console) merges one ref into another without a working copy:
    working copy. The exec bit and the content merge separately; text merges line by
    line with the same diff3 code. Binary files changed on both sides, delete/change,
    file/directory and edits to the same or adjacent lines are **conflicts**: nothing
-   is written and the reply lists each path and why (409). Files over 1 MiB, more than
-   200 line-by-line merges or 5,000 directories are also left to the client, so a
-   request stays well inside the Lambda timeout.
+   is written and the reply lists each path and why (409). A file over 1 MiB, or past
+   200 line-by-line merges, is listed with `limit: true`: it is not a clash, and editing
+   the branch does not help. More than 5,000 directories, or more than 20 seconds of
+   merging, refuses the whole request (400), so it never runs into the 29-second Lambda
+   timeout. Like a push, a merge stores no empty directories: a directory both sides
+   emptied between them is dropped.
 4. A clean merge is a change with parents `[target, source]`, written through the same
    path as a push (closure check, locked Layer files, policy validation, ref CAS, audit
    record). The first parent is the target, so `log` and fast-forward checks follow the
@@ -152,11 +156,17 @@ console) merges one ref into another without a working copy:
 5. A merge change is new, so it has no approvals. With four eyes on `main`, send it to a
    review ref (`--to review/NAME`, or the checkbox in the console), have someone who
    wrote none of the branch approve it, then promote it (`strata promote`, or the change
-   page in the console).
+   page in the console). A result ref other than the target only moves forward: if it
+   already holds a revision the merge does not contain (an earlier merge result, with
+   its approvals), the merge is refused (409). The console puts the source revision in
+   the review ref's name, so each merge gets its own.
 
 `dryRun` reports the outcome and conflicts with read access only; the console shows
 it before the button. Conflicts are not yet recorded in history: resolve them on the
-source branch and merge again.
+source branch and merge again. The merge-base walk orders changes by their server
+timestamp. Known limit: if two regions' clocks disagreed across a switchover, the walk
+can read more than it needs or refuse a merge, and its choice of merge base in that case
+is not yet proven.
 
 ## Audit ledger and events
 

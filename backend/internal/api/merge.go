@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path"
 	"sort"
+	"time"
 
 	"github.com/aws-abaschen/strata/backend/internal/authz"
 	"github.com/aws-abaschen/strata/backend/internal/core"
@@ -20,6 +21,10 @@ const (
 	maxMergeFiles     = 200     // files merged line by line
 	maxMergeTrees     = 5000    // directories read
 	maxConflicts      = 100     // conflicts reported
+	// maxMergeTime is the time one merge may spend reading and merging. The
+	// API Lambda stops at 29 s; past this budget the merge is refused with a
+	// clear error instead of a timeout.
+	maxMergeTime = 20 * time.Second
 )
 
 // Merge outcomes.
@@ -34,6 +39,10 @@ const (
 type Conflict struct {
 	Path   string `json:"path"`
 	Reason string `json:"reason"`
+	// Limit is true when the two sides may well merge, but the file is past
+	// what the server merges (size or count). Editing the branch does not
+	// help: it needs a merge in a working copy.
+	Limit bool `json:"limit,omitempty"`
 }
 
 // MergeResult is the reply of POST /repos/{repo}/merge.
@@ -124,7 +133,7 @@ func (a *API) mergeRefs(w http.ResponseWriter, r *http.Request) {
 	case src.Target == tgt.Target:
 		res.Status, res.Base = MergeUpToDate, tgt.Target
 	case rw.Truncated:
-		a.fail(w, r, badRequest("the branches are more than %d changes apart: merge them on the client", maxRangeWalk))
+		a.fail(w, r, badRequest("the branches are more than %d changes apart, which is more than the server merges", maxRangeWalk))
 		return
 	case len(rw.Common) == 0:
 		a.fail(w, r, badRequest("%s and %s share no history", in.Source, in.Target))
@@ -132,7 +141,7 @@ func (a *API) mergeRefs(w http.ResponseWriter, r *http.Request) {
 	case rw.BaseInHead:
 		res.Status, res.Base = MergeFastForward, tgt.Target
 	case len(rw.Common) > 1:
-		a.fail(w, r, badRequest("%s and %s have %d merge bases (a criss-cross merge): merge them on the client", in.Source, in.Target, len(rw.Common)))
+		a.fail(w, r, badRequest("%s and %s have %d merge bases (a criss-cross merge), which the server does not merge", in.Source, in.Target, len(rw.Common)))
 		return
 	case len(rw.InRange) == 0:
 		res.Status, res.Base = MergeUpToDate, rw.Common[0]
@@ -155,10 +164,34 @@ func (a *API) mergeRefs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	switch res.Status {
-	case MergeUpToDate:
+	if res.Status == MergeUpToDate {
 		writeJSON(w, http.StatusOK, res)
 		return
+	}
+	tgtChange, err := a.Meta.GetChange(ctx, rp.Name, tgt.Target)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
+	// A result ref other than the target (a review ref) only moves forward.
+	// Replacing an earlier merge result there would strand its approvals.
+	if expected != "" && expected != tgt.Target && !in.DryRun {
+		tips := []core.Change{srcChange}
+		if res.Status == MergeClean {
+			tips = append(tips, tgtChange)
+		}
+		ok, err := a.reaches(ctx, rp.Name, tips, expected)
+		if err != nil {
+			a.fail(w, r, err)
+			return
+		}
+		if !ok {
+			a.fail(w, r, fmt.Errorf("%w: ref %q already holds %s, which this merge does not contain: use another name, or delete the ref first", store.ErrConflict, in.Into, expected.Short()))
+			return
+		}
+	}
+
+	switch res.Status {
 	case MergeFastForward:
 		if !in.DryRun {
 			ref, err := a.moveRef(r, rp, in.Into, src.Target, expected)
@@ -177,12 +210,7 @@ func (a *API) mergeRefs(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err)
 		return
 	}
-	tgtChange, err := a.Meta.GetChange(ctx, rp.Name, tgt.Target)
-	if err != nil {
-		a.fail(w, r, err)
-		return
-	}
-	m := &treeMerger{a: a, ctx: ctx, repo: rp.Name, dry: in.DryRun, label: in.Source}
+	m := &treeMerger{a: a, ctx: ctx, repo: rp.Name, dry: in.DryRun, label: in.Source, deadline: time.Now().Add(maxMergeTime)}
 	tree, err := m.tree("", base.Tree, tgtChange.Tree, srcChange.Tree)
 	if err != nil {
 		a.fail(w, r, err)
@@ -247,12 +275,44 @@ type treeMerger struct {
 	conflicts []Conflict
 	files     int
 	trees     int
+	deadline  time.Time // zero = no time budget
+}
+
+// reaches reports whether rev is one of tips or in the history of one.
+// A history too long to read counts as not reached.
+func (a *API) reaches(ctx context.Context, repo string, tips []core.Change, rev core.Hash) (bool, error) {
+	for _, tip := range tips {
+		rw, err := a.walkRange(ctx, repo, tip, rev, false)
+		if err != nil {
+			return false, err
+		}
+		if rw.BaseInHead && !rw.Truncated {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *treeMerger) conflict(p, reason string) {
 	if len(m.conflicts) < maxConflicts {
 		m.conflicts = append(m.conflicts, Conflict{Path: p, Reason: reason})
 	}
+}
+
+// overLimit records a file the server will not merge because of its size
+// or the number of files, not because the two sides clash.
+func (m *treeMerger) overLimit(p, reason string) {
+	if len(m.conflicts) < maxConflicts {
+		m.conflicts = append(m.conflicts, Conflict{Path: p, Reason: reason, Limit: true})
+	}
+}
+
+// inTime fails once the merge has used its time budget.
+func (m *treeMerger) inTime() error {
+	if !m.deadline.IsZero() && time.Now().After(m.deadline) {
+		return badRequest("the merge took more than %s on the server, which is its limit: nothing was merged", maxMergeTime)
+	}
+	return m.ctx.Err()
 }
 
 func (m *treeMerger) put(b []byte) (core.Hash, error) {
@@ -268,12 +328,17 @@ func (m *treeMerger) load(h core.Hash) (core.Tree, error) {
 	}
 	m.trees++
 	if m.trees > maxMergeTrees {
-		return core.Tree{}, badRequest("more than %d directories to merge: merge on the client", maxMergeTrees)
+		return core.Tree{}, badRequest("more than %d directories to merge, which is more than the server merges", maxMergeTrees)
+	}
+	if err := m.inTime(); err != nil {
+		return core.Tree{}, err
 	}
 	return m.a.loadTree(m.ctx, m.repo, h)
 }
 
-// tree merges directory p. base is "" when the directory is new on both sides.
+// tree merges directory p. base is "" when the directory is new on both
+// sides. Below the root, a directory left with no entries returns "": like
+// a push, a merge stores no empty directories.
 func (m *treeMerger) tree(p string, base, ours, theirs core.Hash) (core.Hash, error) {
 	switch {
 	case ours == theirs, base == theirs:
@@ -310,6 +375,9 @@ func (m *treeMerger) tree(p string, base, ours, theirs core.Hash) (core.Hash, er
 			out.Entries = append(out.Entries, *e)
 		}
 	}
+	if len(out.Entries) == 0 && p != "" {
+		return "", nil
+	}
 	b, _, err := out.Encode()
 	if err != nil {
 		return "", err
@@ -342,6 +410,9 @@ func (m *treeMerger) entry(p string, base, ours, theirs *core.TreeEntry) (*core.
 		h, err := m.tree(p, bh, ours.Hash, theirs.Hash)
 		if err != nil {
 			return nil, err
+		}
+		if h == "" {
+			return nil, nil // both sides emptied it between them
 		}
 		return &core.TreeEntry{Kind: core.KindDir, Hash: h}, nil
 	case isFile(ours) && isFile(theirs) && (base == nil || isFile(base)):
@@ -382,13 +453,16 @@ func (m *treeMerger) file(p string, base, ours, theirs *core.TreeEntry) (*core.T
 		return out, nil
 	}
 	if base.Size > maxMergeFileBytes || ours.Size > maxMergeFileBytes || theirs.Size > maxMergeFileBytes {
-		m.conflict(p, "changed on both sides and too large to merge on the server")
+		m.overLimit(p, "changed on both sides and too large to merge on the server")
 		return ours, nil
 	}
 	m.files++
 	if m.files > maxMergeFiles {
-		m.conflict(p, "changed on both sides; too many such files to merge on the server")
+		m.overLimit(p, "changed on both sides; too many such files to merge on the server")
 		return ours, nil
+	}
+	if err := m.inTime(); err != nil {
+		return nil, err
 	}
 	var blobs [3][]byte
 	for i, e := range []*core.TreeEntry{base, ours, theirs} {
@@ -405,7 +479,7 @@ func (m *treeMerger) file(p string, base, ours, theirs *core.TreeEntry) (*core.T
 	merged, n, ok := merge.Merge3(blobs[0], blobs[1], blobs[2], m.label)
 	switch {
 	case !ok:
-		m.conflict(p, "changed on both sides and too large to merge on the server")
+		m.overLimit(p, "changed on both sides and too large to merge on the server")
 		return ours, nil
 	case n > 0:
 		m.conflict(p, "both sides changed the same lines")

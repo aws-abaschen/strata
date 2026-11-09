@@ -15,14 +15,15 @@ export function MergePanel({ repo, target }: { repo: string; target: string }) {
   const source = sources.some((r) => r.name === picked) ? picked : (sources[0]?.name ?? '')
   const [toReview, setToReview] = useState(false)
   const [message, setMessage] = useState('')
-  const reviewRef = `review/merge-${source.replace(/[^A-Za-z0-9._/-]/g, '-')}`
-  const into = toReview ? reviewRef : target
-
   const preview = useQuery({
     queryKey: ['merge-preview', repo, source, target],
     queryFn: () => api.merge(repo, { source, target, dryRun: true }),
     enabled: !!source,
   })
+  // The source revision is part of the name, so a later merge of the same
+  // branch gets its own review ref and never replaces an approved result.
+  const reviewRef = `review/merge-${source.replace(/[^A-Za-z0-9._/-]/g, '-')}-${(preview.data?.source ?? '').slice(0, 7)}`
+  const into = toReview ? reviewRef : target
   const run = useMutation({
     mutationFn: () => api.merge(repo, { source, target, into, message: message.trim() || undefined }),
     onSuccess: () => {
@@ -128,11 +129,15 @@ function Preview({ repo, source, target, result: r }: { repo: string; source: st
           <Rev repo={repo} rev={r.target} /> ({target}) and <Rev repo={repo} rev={r.source} /> ({source}).
         </p>
       )
-    case 'conflicts':
+    case 'conflicts': {
+      const clashes = r.conflicts.filter((c) => !c.limit).length
+      const limits = r.conflicts.length - clashes
       return (
         <>
           <p className="error">
-            {r.conflicts.length === 1 ? '1 conflict' : `${r.conflicts.length} conflicts`}: {source} does not merge cleanly into {target}. Nothing will be written.
+            {clashes > 0 && <>{clashes === 1 ? '1 conflict' : `${clashes} conflicts`}: {source} does not merge cleanly into {target}. </>}
+            {limits > 0 && <>{limits === 1 ? '1 file is' : `${limits} files are`} past what the server merges. </>}
+            Nothing will be written.
           </p>
           <ul className="list">
             {r.conflicts.map((c) => (
@@ -142,12 +147,21 @@ function Preview({ repo, source, target, result: r }: { repo: string; source: st
               </li>
             ))}
           </ul>
-          <p className="muted">
-            Edit {source} so it no longer conflicts (for example, make the same change {target} made in those places), push, then merge
-            again.
-          </p>
+          {clashes > 0 && (
+            <p className="muted">
+              Edit {source} so it no longer conflicts (for example, make the same change {target} made in those places), push, then merge
+              again.
+            </p>
+          )}
+          {limits > 0 && (
+            <p className="muted">
+              Files past the server's limits cannot be merged here yet, whatever their content. Make {source} carry the same content as{' '}
+              {target} for those files, or keep the change to them on one branch only.
+            </p>
+          )}
         </>
       )
+    }
   }
 }
 

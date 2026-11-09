@@ -334,7 +334,11 @@ func run(ctx context.Context, args []string, env Env) error {
 		}
 		res, err := c.Merge(ctx, st.Repo, MergeRequest{Source: fs.Arg(0), Target: target, Into: *to, Message: *msg, Metadata: md, DryRun: *dry})
 		for _, cf := range res.Conflicts {
-			fmt.Fprintf(env.Out, "  CONFLICT %s: %s\n", cf.Path, cf.Reason)
+			kind := "CONFLICT"
+			if cf.Limit {
+				kind = "LIMIT"
+			}
+			fmt.Fprintf(env.Out, "  %s %s: %s\n", kind, cf.Path, cf.Reason)
 		}
 		if err != nil {
 			return err

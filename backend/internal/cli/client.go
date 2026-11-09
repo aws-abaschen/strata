@@ -339,9 +339,13 @@ type MergeResult struct {
 	Target    core.Hash
 	Base      core.Hash
 	Into      string
-	Conflicts []struct{ Path, Reason string }
-	Ref       *core.Ref
-	Change    *core.Change
+	Conflicts []struct {
+		Path, Reason string
+		// Limit: past what the server merges, not a clash between the sides.
+		Limit bool
+	}
+	Ref    *core.Ref
+	Change *core.Change
 }
 
 // Merge merges in.Source into in.Target on the server.
@@ -350,7 +354,16 @@ func (c *Client) Merge(ctx context.Context, repo string, in MergeRequest) (Merge
 	err := c.do(ctx, http.MethodPost, "/repos/"+esc(repo)+"/merge", in, &out)
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Status == http.StatusConflict && json.Unmarshal(ae.Body, &out) == nil && out.Status == "conflicts" {
-		return out, fmt.Errorf("%s: nothing was merged", plural(len(out.Conflicts), "conflict"))
+		clashes := 0
+		for _, cf := range out.Conflicts {
+			if !cf.Limit {
+				clashes++
+			}
+		}
+		if clashes == 0 {
+			return out, fmt.Errorf("%s past what the server merges: nothing was merged", plural(len(out.Conflicts), "file"))
+		}
+		return out, fmt.Errorf("%s: nothing was merged", plural(clashes, "conflict"))
 	}
 	return out, err
 }
