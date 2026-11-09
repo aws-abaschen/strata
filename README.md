@@ -7,6 +7,7 @@ searched across all repositories and synced to external systems.
 
 Product vision: [PR/FAQ](https://claude.ai/artifact/8UnmdjQ2HzodM9keAQnKoi).
 Design notes: [docs/architecture.md](docs/architecture.md).
+Roadmap: [docs/roadmap.md](docs/roadmap.md).
 
 ## What works today (MVP)
 
@@ -31,6 +32,7 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 | Exit: `strata export` writes a repository as plain Git plus an evidence sidecar (sealed changes, trees, ledger, anchors, annotations, approvals); `strata export verify` and an independent Python verifier prove it complete and unaltered, offline ([format](docs/export-format.md)) | done |
 | Disaster recovery: warm standby in eu-central-1 (global table, two-way object replication, its own audit archive), one writer fenced in every write transaction, `strata-dr switchover` drilled live (about 20 s of no writes, no data loss) and `promote --force` with chain repair; Cognito user pool replicated with automatic sign-in failover (passkeys as MFA), drilled | done |
 | Branch merges in the web console, wave rollouts, Git bridge | next |
+| Agent scale: signed provenance per change, agent classes with a sponsor and kill switch, Layers as signed capability grants, segment storage, query API, mirror mode | planned, see [docs/roadmap.md](docs/roadmap.md) |
 
 ## Layout
 

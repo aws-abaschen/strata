@@ -515,16 +515,32 @@ drilled without losing a region.
 
 ## Known gaps and next steps
 
+The order and the reasons are in [roadmap.md](roadmap.md).
+
 - **Audit of reads**: only writes are in the ledger. Reads can be logged with API
   Gateway access logs and S3 data events in CloudTrail.
 - **Closure check** walks the whole tree on every push. Next: skip subtrees already
   verified in the parent change.
 - **Large files**: whole-file objects up to 5 GB. Next: content-defined chunking and
   multipart uploads.
+- **Storage layout**: one S3 object per content object, so a push of many small files
+  is many requests. Next: one immutable segment per push plus an index, compacted in the
+  background; hashes, ledger and export stay independent of the physical layout.
+- **Provenance**: the author comes from the verified JWT. Next: a server-signed record per
+  change (principal, agent class and sponsor, model, Layer digests in effect, prompt
+  digest, session), taken from the session and never from commit text.
+- **Agent identities**: any Cognito principal can act. Next: agent classes with scopes,
+  a budget, an expiry, a required human sponsor and a class-wide kill switch; the sponsor
+  never counts as an approver of the agent's change.
+- **Query API**: history, blame, diff and merge-base by API and MCP, so agents and CI
+  need no checkout. Comes before virtual checkout.
 - **Merges**: `strata pull` merges on the client; histories stay linear. Next: branches
   with server-side merge changes (two parents) and conflicts recorded in history, so a
   reviewer can merge from the web console.
 - **Layers**: automatic wave rollouts (today: point canary repos at a `canary` ref, then move `main`), fleet drift view (which Layer revision each repo last pulled), Layer-level deny rules.
+  Layers are also a trust boundary: signed bundles verified before load, separate
+  classes for text rules, executable hooks and MCP servers, allow-lists that name tools
+  and scopes, and waves gated on health signals.
 - **Permissions**: repository-level today. Next: path-level rules (the changed paths
   of a push in the Cedar context) and a Cedar schema to validate policies.
-- **Git bridge** (live, two-way; one-way export is done), **semantic search**, **KMS per-object keys**, **Object Lock retention**.
+- **Git bridge** (live, two-way; one-way export is done; first step is a mirror mode in front of the incumbent host), **semantic search**, **KMS per-object keys**, **Object Lock retention**.
